@@ -1,0 +1,9 @@
+# linux stuff
+tags
+*.swp
+core
+
+# game files
+*.out
+*.spv
+bin/
