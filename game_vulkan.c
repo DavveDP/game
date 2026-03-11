@@ -1,0 +1,253 @@
+const char* enabledInstanceExtensionNames[] = {
+    VK_KHR_SURFACE_EXTENSION_NAME,
+    VK_KHR_XLIB_SURFACE_EXTENSION_NAME
+};
+
+const char* enabledDeviceExtensionNames[] = {
+    VK_KHR_SWAPCHAIN_EXTENSION_NAME
+};
+
+const char* enabledLayerNames[] = {
+    "VK_LAYER_KHRONOS_validation"
+};
+
+typedef struct PhysicalDevice {
+    VkPhysicalDevice handle;
+    u32 presentIndex;
+
+    struct {
+        u32 index;
+        VkQueueFamilyProperties props;
+    } graphicsQF;
+
+    struct {
+        u32 index;
+        VkQueueFamilyProperties props;
+    } presentQF;
+    VkPresentModeKHR presentMode;
+
+    struct {
+        u32 count;
+        VkSurfaceFormatKHR* items;
+        VkSurfaceFormatKHR selected;
+    } formats;
+} PhysicalDevice;
+
+typedef struct Swapchain {
+    VkSwapchainKHR handle;
+    VkImage* images;
+    VkImageView* imageViews;
+    VkFramebuffer* framebuffers;
+    u32 imageCount;
+} Swapchain;
+
+size_t get_swapchain_size(u32 imageCount) {
+    arena_t a = {0};
+    arena_init(&a, NULL, SIZE_MAX);
+
+    alloc(&a, Swapchain);
+    alloc_array(&a, VkImage, imageCount);
+    alloc_array(&a, VkImageView, imageCount);
+    alloc_array(&a, VkFramebuffer, imageCount);
+    return (size_t)(uintptr_t)a.curr;
+}
+
+typedef struct LogicalDevice {
+    VkDevice handle;
+    struct {
+        VkQueue graphics;
+        VkQueue present;
+    } queueHandles;
+    Swapchain* swapchain;
+    VkSurfaceCapabilitiesKHR surfaceCapabilities;
+} LogicalDevice;
+
+typedef struct vec3 {
+    float x, y, z;
+} vec3;
+
+typedef struct vec2 {
+    float x, y;
+} vec2;
+
+//typedef struct Vertex_t {
+//    vec3 pos;
+//    vec3 normal;
+//    vec2 uv;
+//} Vertex_t;
+// placeholder for testing
+typedef struct Vertex_t {
+    vec2 pos;
+    vec3 color;
+} Vertex_t;
+
+
+VkResult vulkan_create_instance(VkInstance* instance) {
+    VkApplicationInfo appInfo = {
+        .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+        .pApplicationName = "My Game",
+        .applicationVersion = 0,
+        .pEngineName = "None",
+        .apiVersion = VK_API_VERSION_1_2
+    };
+
+    VkInstanceCreateInfo info = {
+        .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+        .pApplicationInfo = &appInfo,
+        .enabledLayerCount = LEN(enabledLayerNames),
+        .ppEnabledLayerNames = enabledLayerNames,
+        .enabledExtensionCount = LEN(enabledInstanceExtensionNames),
+        .ppEnabledExtensionNames = enabledInstanceExtensionNames
+    };
+    return vkCreateInstance(&info, NULL, instance);
+}
+
+VkResult vulkan_create_logical_device(PhysicalDevice* physDevice, LogicalDevice* device) {
+    float priority = 1.0f;
+    VkDeviceQueueCreateInfo infos[2] = {
+        // graphics
+        {
+            .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+            .queueFamilyIndex = physDevice->graphicsQF.index,
+            .queueCount = 1,
+            .pQueuePriorities = &priority
+        }
+    };
+    u32 qCount = 1;
+    if (physDevice->presentQF.index != physDevice->graphicsQF.index) {
+        infos[1].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+        infos[1].queueFamilyIndex = physDevice->presentQF.index;
+        infos[1].queueCount = 1;
+        infos[1].pQueuePriorities = &priority;
+        qCount++;
+    }
+
+    VkPhysicalDeviceFeatures enabledFeatures = {0};
+    VkDeviceCreateInfo info = {
+        .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+        .queueCreateInfoCount = qCount,
+        .pQueueCreateInfos = infos,
+        .enabledExtensionCount = LEN(enabledDeviceExtensionNames),
+        .ppEnabledExtensionNames = enabledDeviceExtensionNames,
+        .pEnabledFeatures = &enabledFeatures
+    };
+    VkResult res = vkCreateDevice(physDevice->handle, &info, NULL, &device->handle);
+    vkGetDeviceQueue(device->handle, physDevice->graphicsQF.index, 0, &device->queueHandles.graphics);
+    vkGetDeviceQueue(device->handle, physDevice->presentQF.index, 0, &device->queueHandles.present);
+    device->swapchain = NULL;
+    return res;
+}
+
+u32 get_surface_capabilities_image_count(VkSurfaceKHR surface, PhysicalDevice* physDevice, LogicalDevice* device) {
+    VkResult res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physDevice->handle, surface, &device->surfaceCapabilities);
+    assert(res == VK_SUCCESS);
+    assert(device->surfaceCapabilities.currentExtent.width != UINT32_MAX); // TODO: need to handle different if not X11
+
+    // decide on image count, according to:
+    // https://vulkan-tutorial.com/Drawing_a_triangle/Presentation/Swap_chain
+    // "However, simply sticking to this minimum means that we may sometimes have to wait on the driver to complete internal 
+    // operations before we can acquire another image to render to. Therefore it is recommended to request at least one 
+    // more image than the minimum:"
+    u32 imageCount = device->surfaceCapabilities.minImageCount + 1;
+    if (device->surfaceCapabilities.maxImageCount > 0 && imageCount > device->surfaceCapabilities.maxImageCount) {
+        imageCount = device->surfaceCapabilities.maxImageCount;
+    }
+    return imageCount;
+}
+
+void create_and_set_new_swapchain(arena_t* swapchainArena, u32 imageCount, VkSurfaceKHR surface, PhysicalDevice* physDevice, LogicalDevice* device, VkRenderPass renderPass) {
+    VkSwapchainCreateInfoKHR createInfo = {
+        .sType =                 VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+        .surface =               surface,
+        .minImageCount =         imageCount,
+        .imageFormat =           physDevice->formats.selected.format,
+        .imageColorSpace =       physDevice->formats.selected.colorSpace,
+        .imageExtent =           device->surfaceCapabilities.currentExtent,
+        .imageArrayLayers =      1,
+        .imageUsage =            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        .imageSharingMode =      VK_SHARING_MODE_EXCLUSIVE,
+        .queueFamilyIndexCount = 0,
+        .pQueueFamilyIndices =   NULL,
+        .preTransform =          device->surfaceCapabilities.currentTransform,
+        .compositeAlpha =        VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+        .presentMode =           physDevice->presentMode,
+        .clipped =               VK_TRUE,
+        .oldSwapchain =          device->swapchain ? device->swapchain->handle : VK_NULL_HANDLE
+    };
+    // if graphics and presents are from different queue indices
+    if (device->queueHandles.graphics != device->queueHandles.present) {
+        u32 indices[2] = {physDevice->graphicsQF.index, physDevice->presentQF.index};
+        createInfo.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
+        createInfo.queueFamilyIndexCount = 2;
+        createInfo.pQueueFamilyIndices = indices;
+    }
+
+    device->swapchain = (Swapchain*)alloc(swapchainArena, Swapchain);
+    VkResult res = vkCreateSwapchainKHR(device->handle, &createInfo, NULL, &device->swapchain->handle);
+
+    assert(device->swapchain->handle != VK_NULL_HANDLE);
+    assert(res == VK_SUCCESS);
+
+    // create images, views and framebuffers
+    res = vkGetSwapchainImagesKHR(device->handle, device->swapchain->handle, &imageCount, NULL);
+    assert(res == VK_SUCCESS);
+    device->swapchain->images = alloc_array(swapchainArena, VkImage, imageCount);
+    device->swapchain->imageViews = alloc_array(swapchainArena, VkImageView, imageCount);
+    device->swapchain->framebuffers = alloc_array(swapchainArena, VkFramebuffer, imageCount);
+    res = vkGetSwapchainImagesKHR(device->handle, device->swapchain->handle, &imageCount, device->swapchain->images);
+    assert(res == VK_SUCCESS);
+    for (int i = 0; i < imageCount; i++) {
+        VkImageViewCreateInfo imageViewInfo = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = device->swapchain->images[i],
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = physDevice->formats.selected.format,
+            .subresourceRange = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = 1
+            }
+        };
+        res = vkCreateImageView(device->handle, &imageViewInfo, NULL, &device->swapchain->imageViews[i]);
+        assert(res == VK_SUCCESS);
+
+        VkFramebufferCreateInfo framebufferInfo = {
+            .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+            .renderPass = renderPass,
+            .attachmentCount = 1,
+            .pAttachments = &device->swapchain->imageViews[i],
+            .width = device->surfaceCapabilities.currentExtent.width,
+            .height = device->surfaceCapabilities.currentExtent.height,
+            .layers = 1
+        };
+        res = vkCreateFramebuffer(device->handle, &framebufferInfo, NULL, &device->swapchain->framebuffers[i]);
+        assert(res == VK_SUCCESS);
+    }
+    device->swapchain->imageCount = imageCount;
+};
+
+void destroy_swapchain(VkDevice handle, Swapchain* swapchain) {
+    for (int i = 0; i < swapchain->imageCount; i++) {
+        vkDestroyFramebuffer(handle, swapchain->framebuffers[i], NULL);
+        vkDestroyImageView(handle, swapchain->imageViews[i], NULL);
+        // images destroyed as part of the swapchain
+    }
+    vkDestroySwapchainKHR(handle, swapchain->handle, NULL);
+}
+
+//VkResult create_render_pass_and_framebuffers(arena_t* arena, LogicalDevice* device) {
+//
+//}
+
+VkShaderModule create_shader_module(VkDevice device, const u32* code, size_t codeSize, VkResult* res) {
+    VkShaderModuleCreateInfo info = {
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize = codeSize,
+        .pCode = code
+    };
+    VkShaderModule module;
+    *res = vkCreateShaderModule(device, &info, NULL, &module);
+    return module;
+}
