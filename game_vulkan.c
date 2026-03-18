@@ -62,6 +62,20 @@ typedef struct LogicalDevice {
     VkSurfaceCapabilitiesKHR surfaceCapabilities;
 } LogicalDevice;
 
+typedef struct VulkanCtx {
+    VkInstance instance;
+    struct {
+        PhysicalDevice* selected;
+        PhysicalDevice* all;
+        u32 count;
+    } physicalDevice;
+
+    LogicalDevice device;
+    VkSurfaceKHR surface;
+    VkRenderPass renderPass;
+    VkPipeline pipeline;
+} VulkanCtx;
+
 typedef struct vec3 {
     float x, y, z;
 } vec3;
@@ -102,7 +116,8 @@ VkResult vulkan_create_instance(VkInstance* instance) {
     return vkCreateInstance(&info, NULL, instance);
 }
 
-VkResult vulkan_create_logical_device(PhysicalDevice* physDevice, LogicalDevice* device) {
+void vulkan_create_logical_device(VulkanCtx* ctx) {
+    PhysicalDevice* physDevice = ctx->physicalDevice.selected;
     float priority = 1.0f;
     VkDeviceQueueCreateInfo infos[2] = {
         // graphics
@@ -131,15 +146,16 @@ VkResult vulkan_create_logical_device(PhysicalDevice* physDevice, LogicalDevice*
         .ppEnabledExtensionNames = enabledDeviceExtensionNames,
         .pEnabledFeatures = &enabledFeatures
     };
-    VkResult res = vkCreateDevice(physDevice->handle, &info, NULL, &device->handle);
-    vkGetDeviceQueue(device->handle, physDevice->graphicsQF.index, 0, &device->queueHandles.graphics);
-    vkGetDeviceQueue(device->handle, physDevice->presentQF.index, 0, &device->queueHandles.present);
-    device->swapchain = NULL;
-    return res;
+    VkResult res = vkCreateDevice(physDevice->handle, &info, NULL, &ctx->device.handle);
+    assert(res == VK_SUCCESS);
+    vkGetDeviceQueue(ctx->device.handle, physDevice->graphicsQF.index, 0, &ctx->device.queueHandles.graphics);
+    vkGetDeviceQueue(ctx->device.handle, physDevice->presentQF.index, 0, &ctx->device.queueHandles.present);
+    ctx->device.swapchain = NULL;
 }
 
-u32 get_surface_capabilities_image_count(VkSurfaceKHR surface, PhysicalDevice* physDevice, LogicalDevice* device) {
-    VkResult res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physDevice->handle, surface, &device->surfaceCapabilities);
+u32 get_surface_capabilities_image_count(VulkanCtx* ctx) {
+    LogicalDevice* device = &ctx->device;
+    VkResult res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(ctx->physicalDevice.selected->handle, ctx->surface, &device->surfaceCapabilities);
     assert(res == VK_SUCCESS);
     assert(device->surfaceCapabilities.currentExtent.width != UINT32_MAX); // TODO: need to handle different if not X11
 
@@ -155,10 +171,52 @@ u32 get_surface_capabilities_image_count(VkSurfaceKHR surface, PhysicalDevice* p
     return imageCount;
 }
 
-void create_and_set_new_swapchain(arena_t* swapchainArena, u32 imageCount, VkSurfaceKHR surface, PhysicalDevice* physDevice, LogicalDevice* device, VkRenderPass renderPass) {
+typedef struct staging_buffer_upload_t {
+    VkBufferCopy copyRegion;
+    VkBuffer src, dst;
+} staging_buffer_upload_t;
+
+void upload_staging_buffer(VulkanCtx* ctx, staging_buffer_upload_t* uploadInfo, VkCommandPool transientPool) {
+    VkCommandBufferAllocateInfo copyBufInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = transientPool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1
+    };
+    // copyRegion, src, dst
+    VkCommandBuffer copyBuf;
+    VkResult res = vkAllocateCommandBuffers(ctx->device.handle, &copyBufInfo, &copyBuf);
+    assert(res == VK_SUCCESS);
+
+    VkCommandBufferBeginInfo beginInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+    };
+
+    res = vkBeginCommandBuffer(copyBuf, &beginInfo);
+    assert(res == VK_SUCCESS);
+
+    vkCmdCopyBuffer(copyBuf, uploadInfo->src, uploadInfo->dst, 1, &uploadInfo->copyRegion);
+    res = vkEndCommandBuffer(copyBuf);
+    assert(res == VK_SUCCESS);
+    VkSubmitInfo submitInfo = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &copyBuf
+    };
+    res = vkQueueSubmit(ctx->device.queueHandles.graphics, 1, &submitInfo, VK_NULL_HANDLE);
+    assert(res == VK_SUCCESS);
+    // TODO: add transfer fence maybe?
+    vkQueueWaitIdle(ctx->device.queueHandles.graphics);
+    assert(res == VK_SUCCESS);
+}
+
+void create_and_set_new_swapchain(arena_t* swapchainArena, u32 imageCount, VulkanCtx* ctx) {
+    PhysicalDevice* physDevice = ctx->physicalDevice.selected;
+    LogicalDevice* device = &ctx->device;
     VkSwapchainCreateInfoKHR createInfo = {
         .sType =                 VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
-        .surface =               surface,
+        .surface =               ctx->surface,
         .minImageCount =         imageCount,
         .imageFormat =           physDevice->formats.selected.format,
         .imageColorSpace =       physDevice->formats.selected.colorSpace,
@@ -215,7 +273,7 @@ void create_and_set_new_swapchain(arena_t* swapchainArena, u32 imageCount, VkSur
 
         VkFramebufferCreateInfo framebufferInfo = {
             .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-            .renderPass = renderPass,
+            .renderPass = ctx->renderPass,
             .attachmentCount = 1,
             .pAttachments = &device->swapchain->imageViews[i],
             .width = device->surfaceCapabilities.currentExtent.width,
@@ -237,9 +295,51 @@ void destroy_swapchain(VkDevice handle, Swapchain* swapchain) {
     vkDestroySwapchainKHR(handle, swapchain->handle, NULL);
 }
 
-//VkResult create_render_pass_and_framebuffers(arena_t* arena, LogicalDevice* device) {
-//
-//}
+// TODO: use vulkan allocator to allocate memory
+void create_buffer(
+        VulkanCtx* ctx, 
+        u32 size,
+        VkBufferUsageFlags usage,
+        VkSharingMode sharingMode, 
+        VkMemoryPropertyFlags properties, 
+        VkBuffer* buffer, 
+        VkDeviceMemory* memory
+        ) {
+    VkBufferCreateInfo info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = size,
+        .usage = usage,
+        .sharingMode = sharingMode
+    };
+    VkResult res = vkCreateBuffer(ctx->device.handle, &info, NULL, buffer);
+    assert(res == VK_SUCCESS);
+
+    VkMemoryRequirements memRequirements;
+    vkGetBufferMemoryRequirements(ctx->device.handle, *buffer, &memRequirements);
+
+    VkPhysicalDeviceMemoryProperties memProperties;
+    vkGetPhysicalDeviceMemoryProperties(ctx->physicalDevice.selected->handle, &memProperties);
+
+    int memTypeIndex = -1;
+    for (int i = 0; i < memProperties.memoryTypeCount; i++) {
+        if ((memRequirements.memoryTypeBits & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
+            memTypeIndex = i;
+            break;
+        }
+    }
+    assert(memTypeIndex != -1);
+
+    VkMemoryAllocateInfo allocInfo = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = memRequirements.size,
+        .memoryTypeIndex = memTypeIndex
+    };
+
+    res = vkAllocateMemory(ctx->device.handle, &allocInfo, NULL, memory);
+    assert(res == VK_SUCCESS);
+
+    vkBindBufferMemory(ctx->device.handle, *buffer, *memory, 0);
+}
 
 VkShaderModule create_shader_module(VkDevice device, const u32* code, size_t codeSize, VkResult* res) {
     VkShaderModuleCreateInfo info = {

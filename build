@@ -3,7 +3,7 @@
 FLAGS="-g -std=c23 -Wall -Werror"
 INCLUDE="-I$VULKAN_SDK/include -I."
 LIB="-L$VULKAN_SDK/lib -lvulkan -lX11"
-SRC="game.c"
+SRC="linux_main.c"
 FILENAME="bin/game"
 
 clang-21 -o $FILENAME $FLAGS $SRC $INCLUDE $LIB $1

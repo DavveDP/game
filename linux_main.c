@@ -1,26 +1,18 @@
-
-#include <sys/mman.h>
-#include <signal.h>
-#include <stdio.h>
-#include <X11/Xlib.h>
+// Essentials from C stdlib
 #include <assert.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <string.h>
-#define VK_USE_PLATFORM_XLIB_KHR
-#include <vulkan/vulkan.h>
 
-// TODO: move to different file maybe
-typedef uint64_t u64;
-typedef uint32_t u32;
-typedef uint16_t u16;
-typedef uint8_t  u8;
+typedef unsigned long long u64;
+typedef unsigned int u32;
+typedef unsigned short u16;
+typedef unsigned char  u8;
 
-typedef int64_t i64;
-typedef int32_t i32;
-typedef int16_t i16;
-typedef int8_t  i8;
-
-//typedef u8 bool;
-//typedef u31 bool32;
+typedef long long i64;
+typedef int i32;
+typedef short i16;
+typedef char i8;
 
 #define false 0
 #define true 0
@@ -34,34 +26,29 @@ typedef int8_t  i8;
 //#define CLAMP(X, Min, Max) \
 //    (X) > (Max) ? (Max) : ((X) < Min ? Min : (X))
 
-// my stuff for unity builds
-#include <alloc_linux.c>
-#include <game_vulkan.c> // includes all typedefs we are borrowing
 #include <models.c> // just a bunch of embed directives
-                    //
-// graphics, same backend for all. 
-// Vulkan use will be different on eg switch, 
-// since it likely has other extensions that can be assumed! to exist
-// requires passing in: surface handle creation
+
+// Begin Platfrom specific code
+
+#include <linux_alloc.c>
+
+#include <sys/mman.h>
+#include <signal.h>
+#include <stdio.h>
+#include <X11/Xlib.h>
+#define VK_USE_PLATFORM_XLIB_KHR
+#include <vulkan/vulkan.h>
+#include <game_vulkan.c> 
+
 // audio
 // input
 // time
 // disk, only required for save games
 // (network)
 
-// create memory and allocators
-// initialize vulkan and audio (latter later)
-// load scene
-// loop (pipeline if/when needed)
-//  update
-//  render
-
-// defines that may be extracted to header if needed
-
 Atom WM_DELETE_WINDOW;
 Atom NET_WM_PING;
 Atom WM_PROTOCOLS;
-
 
 volatile sig_atomic_t running = 1;
 
@@ -70,8 +57,11 @@ void sigint_and_sigterm_handler(int sig) {
 }
 
 int main(int argc, char** argv) {
+    // Signal handling
     signal(SIGINT, sigint_and_sigterm_handler);
     signal(SIGTERM, sigint_and_sigterm_handler);
+
+    // Our only alloc call, (see allocators)
     void* mem = mmap(NULL, GB(1), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     // create app arena
     arena_t appArena;
@@ -84,9 +74,9 @@ int main(int argc, char** argv) {
             MB(1)
     );
 
+    VulkanCtx ctx;
     // create vulkan instance
-    VkInstance instance;
-    VkResult res = vulkan_create_instance(&instance);
+    VkResult res = vulkan_create_instance(&ctx.instance);
     assert(res == VK_SUCCESS);
 
     printf("instance created!\n");
@@ -94,7 +84,6 @@ int main(int argc, char** argv) {
     // platform specific stuff to create surface
     Display* display;
     Window window;
-    VkSurfaceKHR surface;
     {
         display = XOpenDisplay(NULL);
         window = XCreateSimpleWindow(
@@ -112,21 +101,19 @@ int main(int argc, char** argv) {
             .dpy = display,
             .window = window
         };
-        VkResult res = vkCreateXlibSurfaceKHR(instance, &info, NULL, &surface);
+        VkResult res = vkCreateXlibSurfaceKHR(ctx.instance, &info, NULL, &ctx.surface);
         assert(res == VK_SUCCESS);
     }
     
-    // from here on out, just plain vulkan
+    // from here on out, just plain vulkan (sort of lol)
     
     // find phys devices, TODO: score and sort them
-    PhysicalDevice* validDevices = NULL;
-    u32 validDeviceCount = 0;
     {
         u32 nPhys;
-        VkResult res = vkEnumeratePhysicalDevices(instance, &nPhys, NULL);
+        VkResult res = vkEnumeratePhysicalDevices(ctx.instance, &nPhys, NULL);
         assert(res == VK_SUCCESS);
         VkPhysicalDevice* handles = alloc_array(&scratchArena, VkPhysicalDevice, nPhys);
-        res = vkEnumeratePhysicalDevices(instance, &nPhys, handles);
+        res = vkEnumeratePhysicalDevices(ctx.instance, &nPhys, handles);
         assert(res == VK_SUCCESS);
         printf("phys device count: %u\n", nPhys);
 
@@ -179,7 +166,7 @@ int main(int argc, char** argv) {
                 // grab first presents queue family, beware can be several!
                 VkBool32 supported = 0;
                 if (vkGetPhysicalDeviceSurfaceSupportKHR(
-                            handles[i], q, surface, &supported) == VK_SUCCESS && 
+                            handles[i], q, ctx.surface, &supported) == VK_SUCCESS && 
                         supported) {
                     validDevice->presentQF.index = q;
                     validDevice->presentQF.props = pqfs[q];
@@ -192,10 +179,10 @@ int main(int argc, char** argv) {
             //if (res != VK_SUCCESS) continue;
             
             // formats
-            res = vkGetPhysicalDeviceSurfaceFormatsKHR(handles[i], surface, &validDevice->formats.count, NULL);
+            res = vkGetPhysicalDeviceSurfaceFormatsKHR(handles[i], ctx.surface, &validDevice->formats.count, NULL);
             if (res != VK_SUCCESS) continue;
             validDevice->formats.items = alloc_array(&scratchArena /*discarded*/, VkSurfaceFormatKHR, validDevice->formats.count);
-            vkGetPhysicalDeviceSurfaceFormatsKHR(handles[i], surface, &validDevice->formats.count, validDevice->formats.items);
+            vkGetPhysicalDeviceSurfaceFormatsKHR(handles[i], ctx.surface, &validDevice->formats.count, validDevice->formats.items);
             // get preferred format
             validDevice->formats.selected = validDevice->formats.items[0];
             for (int f = 0; f < validDevice->formats.count; f++) {
@@ -208,10 +195,10 @@ int main(int argc, char** argv) {
             
             // present mode
             u32 nPresentModes;
-            res = vkGetPhysicalDeviceSurfacePresentModesKHR(handles[i], surface, &nPresentModes, NULL);
+            res = vkGetPhysicalDeviceSurfacePresentModesKHR(handles[i], ctx.surface, &nPresentModes, NULL);
             if (res != VK_SUCCESS) continue;
             VkPresentModeKHR* presentModes = alloc_array(&appArena /*saved*/, VkPresentModeKHR, nPresentModes);
-            vkGetPhysicalDeviceSurfacePresentModesKHR(handles[i], surface, &nPresentModes, presentModes);
+            vkGetPhysicalDeviceSurfacePresentModesKHR(handles[i], ctx.surface, &nPresentModes, presentModes);
             // get preferred present mode
             validDevice->presentMode = VK_PRESENT_MODE_FIFO_KHR;
             for (int p = 0; p < nPresentModes; p++) {
@@ -223,28 +210,26 @@ int main(int argc, char** argv) {
             // this is a valid device
             printf("Found device: %s\n", props.deviceName);
             // first device is assigned to the ptr
-            if (validDeviceCount == 0) {
-                validDevices = validDevice;
+            if (ctx.physicalDevice.count == 0) {
+                ctx.physicalDevice.all = validDevice;
             }
-            validDeviceCount++;
+            ctx.physicalDevice.count++;
             // advance arena mark, ie "lock in" the device
             validDeviceMark = arena_mark(&appArena); 
         }
     }
-    assert(validDevices != NULL && validDeviceCount > 0);
+    assert(ctx.physicalDevice.all != NULL && ctx.physicalDevice.count > 0);
     arena_reset(&scratchArena);
-    PhysicalDevice* physDevice = &validDevices[0];
-    // select first one, can be changed later I guess
-    LogicalDevice device;
-    vulkan_create_logical_device(physDevice, &device);
+    // select device, can be changed later based on some scoring I guess
+    ctx.physicalDevice.selected = &ctx.physicalDevice.all[0];
+    vulkan_create_logical_device(&ctx);
 
     // create render pass
-    VkRenderPass renderPass;
     {
         VkAttachmentDescription attachments[] = {
             // swapchain image view
             {
-                .format = physDevice->formats.selected.format,
+                .format = ctx.physicalDevice.selected->formats.selected.format,
                 .samples = VK_SAMPLE_COUNT_1_BIT,
                 .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
                 .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
@@ -288,12 +273,11 @@ int main(int argc, char** argv) {
             .dependencyCount = 1,
             .pDependencies = &dependency
         };
-        res = vkCreateRenderPass(device.handle, &renderPassInfo, NULL, &renderPass);
+        res = vkCreateRenderPass(ctx.device.handle, &renderPassInfo, NULL, &ctx.renderPass);
         assert(res == VK_SUCCESS);
     }
 
-    // create pipeline
-    VkPipeline pipeline;
+    // create ctx.pipeline
     {
         // create shader stages
         static alignas(4) const u8 vertexCode[] = {
@@ -307,13 +291,13 @@ int main(int argc, char** argv) {
             {
                 .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                 .stage = VK_SHADER_STAGE_VERTEX_BIT,
-                .module = create_shader_module(device.handle, (const u32*)vertexCode, sizeof(vertexCode), &res),
+                .module = create_shader_module(ctx.device.handle, (const u32*)vertexCode, sizeof(vertexCode), &res),
                 .pName = "main"
             },
             {
                 .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                 .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-                .module = create_shader_module(device.handle, (const u32*)fragmentCode, sizeof(fragmentCode), &res),
+                .module = create_shader_module(ctx.device.handle, (const u32*)fragmentCode, sizeof(fragmentCode), &res),
                 .pName = "main"
             }
         };
@@ -410,7 +394,7 @@ int main(int argc, char** argv) {
                 // TODO: uniforms go here
         };
         VkPipelineLayout pipelineLayout;
-        res = vkCreatePipelineLayout(device.handle, &pipelineLayoutInfo, NULL, &pipelineLayout);
+        res = vkCreatePipelineLayout(ctx.device.handle, &pipelineLayoutInfo, NULL, &pipelineLayout);
         assert(res == VK_SUCCESS);
 
         VkGraphicsPipelineCreateInfo pipelineInfo = {
@@ -428,15 +412,15 @@ int main(int argc, char** argv) {
             .pDynamicState = &dynamicStateInfo,
             // skipping dynamic state
             .layout = pipelineLayout,
-            .renderPass = renderPass,
+            .renderPass = ctx.renderPass,
             .subpass = 0,
         };
-        res = vkCreateGraphicsPipelines(device.handle, NULL/*TODO:cache required*/, 1, &pipelineInfo, NULL, &pipeline);
+        res = vkCreateGraphicsPipelines(ctx.device.handle, NULL/*TODO:cache required*/, 1, &pipelineInfo, NULL, &ctx.pipeline);
         assert(res == VK_SUCCESS);
 
-        // destroy shader modules once pipeline is created
+        // destroy shader modules once ctx.pipeline is created
         for (int i = 0; i < LEN(stages); i++) {
-            vkDestroyShaderModule(device.handle, stages[i].module, NULL);
+            vkDestroyShaderModule(ctx.device.handle, stages[i].module, NULL);
         }
     }
 
@@ -445,61 +429,95 @@ int main(int argc, char** argv) {
         VkCommandPoolCreateInfo info = {
             .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
             .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-            .queueFamilyIndex = physDevice->graphicsQF.index
+            .queueFamilyIndex = ctx.physicalDevice.selected->graphicsQF.index
         };
-        res = vkCreateCommandPool(device.handle, &info, NULL, &pool);
+        res = vkCreateCommandPool(ctx.device.handle, &info, NULL, &pool);
+        assert(res == VK_SUCCESS);
+    }
+
+    VkCommandPool transientPool;
+    {
+        VkCommandPoolCreateInfo info = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
+            .queueFamilyIndex = ctx.physicalDevice.selected->graphicsQF.index
+        };
+        res = vkCreateCommandPool(ctx.device.handle, &info, NULL, &transientPool);
         assert(res == VK_SUCCESS);
     }
     // allocate vertices
     Vertex_t vertices[] = {
-        {{0.0f, -0.5f}, {1.0f, 0.0f, 0.0f}},
-        {{0.5f,  0.5f}, {0.0f, 1.0f, 0.0f}},
-        {{-0.5f,  0.5f}, {0.0f, 0.0f, 1.0f}}
+        {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+        {{ 0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
+        {{ 0.5f,  0.5f}, {0.0f, 0.0f, 1.0f}},
+        {{-0.5f,  0.5f}, {1.0f, 1.0f, 1.0f}}
     };
 
+    u16 indices[] = {
+        0, 1, 2, 2, 3, 0
+    };
+
+    // TODO: staging buffer, learn what that even is lol
+
+    // create vertex buffer
     VkBuffer vertexBuffer;
     VkDeviceMemory vertexBufferMemory;
+    VkBuffer indexBuffer;
+    VkDeviceMemory indexBufferMemory;
     {
-        VkBufferCreateInfo bufferInfo = {
-            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-            .size = sizeof(vertices),
-            .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE
-        };
-        res = vkCreateBuffer(device.handle, &bufferInfo, NULL, &vertexBuffer);
-        assert(res == VK_SUCCESS);
+        // create staging buffer
+        VkBuffer stagingBuffer;
+        VkDeviceMemory stagingBufferMemory;
+        create_buffer(&ctx, 
+                sizeof(vertices), 
+                VK_BUFFER_USAGE_TRANSFER_SRC_BIT, 
+                VK_SHARING_MODE_EXCLUSIVE,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                &stagingBuffer, 
+                &stagingBufferMemory);
 
-        VkMemoryRequirements memRequirements;
-        vkGetBufferMemoryRequirements(device.handle, vertexBuffer, &memRequirements);
+        create_buffer(&ctx,
+                sizeof(vertices),
+                VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                VK_SHARING_MODE_EXCLUSIVE,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                &vertexBuffer,
+                &vertexBufferMemory);
 
-        VkPhysicalDeviceMemoryProperties memProperties;
-        vkGetPhysicalDeviceMemoryProperties(physDevice->handle, &memProperties);
+        create_buffer(&ctx,
+                sizeof(indices),
+                VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                VK_SHARING_MODE_EXCLUSIVE,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                &indexBuffer,
+                &indexBufferMemory);
 
-        VkMemoryPropertyFlags flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-        int memTypeIndex = -1;
-        for (int i = 0; i < memProperties.memoryTypeCount; i++) {
-            if ((memRequirements.memoryTypeBits & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & flags) == flags) {
-                memTypeIndex = i;
-                break;
-            }
-        }
-        assert(memTypeIndex != -1);
-
-        VkMemoryAllocateInfo allocInfo = {
-            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-            .allocationSize = memRequirements.size,
-            .memoryTypeIndex = memTypeIndex
-        };
-
-        res = vkAllocateMemory(device.handle, &allocInfo, NULL, &vertexBufferMemory);
-        assert(res == VK_SUCCESS);
-
-        // bind, map, copy and unmap
-        vkBindBufferMemory(device.handle, vertexBuffer, vertexBufferMemory, 0);
+        // upload vertex data
         void* data;
-        vkMapMemory(device.handle, vertexBufferMemory, 0, bufferInfo.size, 0, &data);
-        memcpy(data, vertices, (size_t) bufferInfo.size);
-        vkUnmapMemory(device.handle, vertexBufferMemory);
+        vkMapMemory(ctx.device.handle, stagingBufferMemory, 0, sizeof(vertices), 0, &data);
+        memcpy(data, vertices, (size_t) sizeof(vertices));
+        vkUnmapMemory(ctx.device.handle, stagingBufferMemory);
+
+        staging_buffer_upload_t uploadInfo = {
+            .copyRegion = {0, 0, sizeof(vertices)},
+            .src = stagingBuffer,
+            .dst = vertexBuffer
+        };
+        upload_staging_buffer(&ctx, &uploadInfo, transientPool); // waits on device idle
+
+        // upload index data
+        vkMapMemory(ctx.device.handle, stagingBufferMemory, 0, sizeof(indices), 0, &data);
+        memcpy(data, indices, (size_t) sizeof(indices));
+        vkUnmapMemory(ctx.device.handle, stagingBufferMemory);
+
+        uploadInfo.copyRegion = (VkBufferCopy){0, 0, sizeof(indices)};
+        uploadInfo.src = stagingBuffer;
+        uploadInfo.dst = indexBuffer;
+        upload_staging_buffer(&ctx, &uploadInfo, transientPool); // waits on device idle
+
+        res = vkResetCommandPool(ctx.device.handle, transientPool, 0);
+        vkDestroyBuffer(ctx.device.handle, stagingBuffer, NULL);
+        vkFreeMemory(ctx.device.handle, stagingBufferMemory, NULL);
     }
 
     // Init window
@@ -525,10 +543,9 @@ int main(int argc, char** argv) {
         do { XNextEvent(display, &e); } while (e.type != ConfigureNotify);
     }
 
-    printf("surface caps\n");
-    u32 imageCount = get_surface_capabilities_image_count(surface, physDevice, &device);
+    // get image count here to determine max frames in flight, does that even make sense?
+    u32 imageCount = get_surface_capabilities_image_count(&ctx);
     u32 framesInFlight = MIN(imageCount, MAX_FRAMES_IN_FLIGHT);
-
 
     // create command buffers
     VkCommandBuffer* cmdBufs = alloc_array(&appArena, VkCommandBuffer, framesInFlight);
@@ -539,7 +556,7 @@ int main(int argc, char** argv) {
             .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
             .commandBufferCount = framesInFlight
         };
-        res = vkAllocateCommandBuffers(device.handle, &info, cmdBufs);
+        res = vkAllocateCommandBuffers(ctx.device.handle, &info, cmdBufs);
         assert(res == VK_SUCCESS);
     }
 
@@ -555,11 +572,11 @@ int main(int argc, char** argv) {
                 .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
                 .flags = VK_FENCE_CREATE_SIGNALED_BIT // first wait doesn't block
             };
-            res = vkCreateSemaphore(device.handle, &semInfo, NULL, &imageAvailableSemaphores[i]);
+            res = vkCreateSemaphore(ctx.device.handle, &semInfo, NULL, &imageAvailableSemaphores[i]);
             assert(res == VK_SUCCESS);
-            res = vkCreateSemaphore(device.handle, &semInfo, NULL, &renderFinishedSemaphores[i]);
+            res = vkCreateSemaphore(ctx.device.handle, &semInfo, NULL, &renderFinishedSemaphores[i]);
             assert(res == VK_SUCCESS);
-            res = vkCreateFence(device.handle, &fenceInfo, NULL, &inFlightFences[i]);
+            res = vkCreateFence(ctx.device.handle, &fenceInfo, NULL, &inFlightFences[i]);
             assert(res == VK_SUCCESS);
         }
     }
@@ -578,7 +595,7 @@ int main(int argc, char** argv) {
         arena_t swapchainArena;
         arena_init(&swapchainArena, block_alloc(&swapchainAlloc), blockSize);
         printf("creating swapchain\n");
-        create_and_set_new_swapchain(&swapchainArena, imageCount, surface, physDevice, &device, renderPass);
+        create_and_set_new_swapchain(&swapchainArena, imageCount, &ctx);
     }
     //printf("created alloc\n");
 
@@ -588,14 +605,14 @@ int main(int argc, char** argv) {
     u8 swapchainCooldown = 0;
     bool recreateSwapchain = false;
     XEvent e;
-    
+
     while(running) {
         // wait for next sync objects
         VkFence fence = inFlightFences[frame];
         VkSemaphore imageAvailableSemaphore = imageAvailableSemaphores[frame];
         VkSemaphore renderFinishedSemaphore = renderFinishedSemaphores[frame];
         VkCommandBuffer cmdBuf = cmdBufs[frame];
-        vkWaitForFences(device.handle, 1, &fence, VK_TRUE, UINT64_MAX);
+        vkWaitForFences(ctx.device.handle, 1, &fence, VK_TRUE, UINT64_MAX);
 
         // bookkeeping
         if (swapchainCooldown > 0) swapchainCooldown--;
@@ -605,50 +622,50 @@ int main(int argc, char** argv) {
             XNextEvent(display, &e);
             switch (e.type) {
                 case ConfigureNotify:
-                {
-                    if(swapchainCooldown == 0 && (e.xconfigure.width != device.surfaceCapabilities.currentExtent.width
-                            || e.xconfigure.height != device.surfaceCapabilities.currentExtent.height)) {
-                        recreateSwapchain = true;
+                    {
+                        if(swapchainCooldown == 0 && (e.xconfigure.width != ctx.device.surfaceCapabilities.currentExtent.width
+                                    || e.xconfigure.height != ctx.device.surfaceCapabilities.currentExtent.height)) {
+                            recreateSwapchain = true;
+                        }
                     }
-                }
-                break;
+                    break;
 
                 case ClientMessage:
-                {
-                    if (e.xclient.message_type == WM_PROTOCOLS) {
-                        Atom msg = e.xclient.data.l[0];
-                        if (msg == WM_DELETE_WINDOW) {
-                            running = 0;
-                        }
-                        // reply to WM ping if needed
-                        else if (msg == NET_WM_PING) {
-                            XEvent reply = e;
-                            Window root = RootWindow(display, DefaultScreen(display)); // TODO: cache this
-                            reply.xclient.window = root;
-                            XSendEvent(display, root, false, SubstructureNotifyMask | SubstructureRedirectMask, &reply);
+                    {
+                        if (e.xclient.message_type == WM_PROTOCOLS) {
+                            Atom msg = e.xclient.data.l[0];
+                            if (msg == WM_DELETE_WINDOW) {
+                                running = 0;
+                            }
+                            // reply to WM ping if needed
+                            else if (msg == NET_WM_PING) {
+                                XEvent reply = e;
+                                Window root = RootWindow(display, DefaultScreen(display)); // TODO: cache this
+                                reply.xclient.window = root;
+                                XSendEvent(display, root, false, SubstructureNotifyMask | SubstructureRedirectMask, &reply);
+                            }
                         }
                     }
-                }
-                break;
+                    break;
             }
             // TODO: handle input events
         }
         if (!running) break;
 
 
-        res = vkAcquireNextImageKHR(device.handle, device.swapchain->handle, UINT64_MAX, imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+        res = vkAcquireNextImageKHR(ctx.device.handle, ctx.device.swapchain->handle, UINT64_MAX, imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
         if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR || recreateSwapchain) {
-            vkDeviceWaitIdle(device.handle);
+            vkDeviceWaitIdle(ctx.device.handle);
             // update capabilities (extents)
-            res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physDevice->handle, surface, &device.surfaceCapabilities);
+            res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(ctx.physicalDevice.selected->handle, ctx.surface, &ctx.device.surfaceCapabilities);
             // create new (transition from old)
             arena_t swapchainArena;
             arena_init(&swapchainArena, block_alloc(&swapchainAlloc), swapchainAlloc.blockSize);
-            Swapchain* old = device.swapchain;
-            create_and_set_new_swapchain(&swapchainArena, imageCount, surface, physDevice, &device, renderPass);
+            Swapchain* old = ctx.device.swapchain;
+            create_and_set_new_swapchain(&swapchainArena, imageCount, &ctx);
 
             // destroy old
-            destroy_swapchain(device.handle, old);
+            destroy_swapchain(ctx.device.handle, old);
             block_alloc_free(&swapchainAlloc, old);
 
             swapchainCooldown = framesInFlight;
@@ -657,7 +674,7 @@ int main(int argc, char** argv) {
             continue;
         } 
 
-        vkResetFences(device.handle, 1, &fence);
+        vkResetFences(ctx.device.handle, 1, &fence);
 
         // record command buffer
         vkResetCommandBuffer(cmdBuf, 0);
@@ -669,21 +686,21 @@ int main(int argc, char** argv) {
 
         VkRenderPassBeginInfo renderPassBeginInfo = {
             .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-            .renderPass = renderPass,
-            .framebuffer = device.swapchain->framebuffers[imageIndex],
+            .renderPass = ctx.renderPass,
+            .framebuffer = ctx.device.swapchain->framebuffers[imageIndex],
             .renderArea.offset = {0,0},
-            .renderArea.extent = device.surfaceCapabilities.currentExtent,
+            .renderArea.extent = ctx.device.surfaceCapabilities.currentExtent,
             .clearValueCount = 1,
             .pClearValues = &clearColor
         };
         vkCmdBeginRenderPass(cmdBuf, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
-        vkCmdBindPipeline(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+        vkCmdBindPipeline(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, ctx.pipeline);
         // dynamic states
         VkViewport viewport = {
             .x = 0.0f,
             .y = 0.0f,
-            .width  = device.surfaceCapabilities.currentExtent.width,
-            .height = device.surfaceCapabilities.currentExtent.height,
+            .width  = ctx.device.surfaceCapabilities.currentExtent.width,
+            .height = ctx.device.surfaceCapabilities.currentExtent.height,
             .minDepth = 0.0f,
             .maxDepth = 1.0f
         };
@@ -691,14 +708,15 @@ int main(int argc, char** argv) {
 
         VkRect2D scissor = {
             .offset = {0, 0},
-            .extent = device.surfaceCapabilities.currentExtent
+            .extent = ctx.device.surfaceCapabilities.currentExtent
         };
 
         vkCmdSetScissor(cmdBuf, 0, 1, &scissor);
-        VkBuffer buffers = {vertexBuffer};
+        VkBuffer vertexBuffers = {vertexBuffer};
         VkDeviceSize offsets[] = {0};
-        vkCmdBindVertexBuffers(cmdBuf, 0, 1, &buffers, offsets);
-        vkCmdDraw(cmdBuf, LEN(vertices), 1, 0, 0);
+        vkCmdBindVertexBuffers(cmdBuf, 0, 1, &vertexBuffers, offsets);
+        vkCmdBindIndexBuffer(cmdBuf, indexBuffer, 0, VK_INDEX_TYPE_UINT16);
+        vkCmdDrawIndexed(cmdBuf, LEN(indices), 1, 0, 0, 0);
         vkCmdEndRenderPass(cmdBuf);
         res = vkEndCommandBuffer(cmdBuf);
         assert(res == VK_SUCCESS);
@@ -715,7 +733,7 @@ int main(int argc, char** argv) {
             .signalSemaphoreCount = 1,
             .pSignalSemaphores = &renderFinishedSemaphore 
         };
-        res = vkQueueSubmit(device.queueHandles.graphics, 1, &submitInfo, fence);
+        res = vkQueueSubmit(ctx.device.queueHandles.graphics, 1, &submitInfo, fence);
         assert(res == VK_SUCCESS);
 
         // present
@@ -724,10 +742,10 @@ int main(int argc, char** argv) {
             .waitSemaphoreCount = 1,
             .pWaitSemaphores = &renderFinishedSemaphore, 
             .swapchainCount = 1,
-            .pSwapchains = &device.swapchain->handle,
+            .pSwapchains = &ctx.device.swapchain->handle,
             .pImageIndices = &imageIndex
         };
-        res = vkQueuePresentKHR(device.queueHandles.present, &presentInfo);
+        res = vkQueuePresentKHR(ctx.device.queueHandles.present, &presentInfo);
         if ((res == VK_SUBOPTIMAL_KHR || res == VK_ERROR_OUT_OF_DATE_KHR) && swapchainCooldown == 0) {
             recreateSwapchain = true;
         }
