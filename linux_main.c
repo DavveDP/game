@@ -1,23 +1,27 @@
+#define _POSIX_C_SOURCE 199309L // required for clock_gettime
+
 // Essentials from C stdlib
 #include <assert.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
-typedef unsigned long long u64;
-typedef unsigned int u32;
-typedef unsigned short u16;
-typedef unsigned char  u8;
 
-typedef long long i64;
-typedef int i32;
-typedef short i16;
-typedef char i8;
+typedef uint64_t u64;
+typedef uint32_t u32;
+typedef uint16_t u16;
+typedef uint8_t  u8;
+
+typedef int64_t i64;
+typedef int32_t i32;
+typedef int16_t i16;
+typedef int8_t  i8;
 
 #define false 0
 #define true 0
 
 #define MAX_FRAMES_IN_FLIGHT 3
+
 #define GB(n) (1ull << 30)
 #define MB(n) (1ull << 20)
 #define KB(n) (1ull << 10)
@@ -31,14 +35,22 @@ typedef char i8;
 // Begin Platfrom specific code
 
 #include <linux_alloc.c>
+#include <math.c> // uses math.h and links with math
 
 #include <sys/mman.h>
 #include <signal.h>
 #include <stdio.h>
+#include <time.h>
 #include <X11/Xlib.h>
 #define VK_USE_PLATFORM_XLIB_KHR
 #include <vulkan/vulkan.h>
 #include <game_vulkan.c> 
+
+u64 get_time_ns() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (u64)ts.tv_sec * 1000000000ull + ts.tv_nsec;
+}
 
 // audio
 // input
@@ -175,8 +187,8 @@ int main(int argc, char** argv) {
             }
 
             //// surface capabilities (only to check min image count or whatever, likely not that important)
-            //res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(handles[i], surface, &validDevice->capabilities);
-            //if (res != VK_SUCCESS) continue;
+            res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(handles[i], ctx.surface, &validDevice->surfaceCapabilities);
+            if (res != VK_SUCCESS) continue;
             
             // formats
             res = vkGetPhysicalDeviceSurfaceFormatsKHR(handles[i], ctx.surface, &validDevice->formats.count, NULL);
@@ -223,6 +235,10 @@ int main(int argc, char** argv) {
     // select device, can be changed later based on some scoring I guess
     ctx.physicalDevice.selected = &ctx.physicalDevice.all[0];
     vulkan_create_logical_device(&ctx);
+
+    // get image count here to determine max frames in flight, does that even make sense?
+    u32 imageCount = get_surface_capabilities_image_count(&ctx);
+    u32 framesInFlight = MIN(imageCount, MAX_FRAMES_IN_FLIGHT);
 
     // create render pass
     {
@@ -276,6 +292,101 @@ int main(int argc, char** argv) {
         res = vkCreateRenderPass(ctx.device.handle, &renderPassInfo, NULL, &ctx.renderPass);
         assert(res == VK_SUCCESS);
     }
+
+    // create uniform buffers before pipeline kinda makes sense right?
+    // or at least close to one another.
+    // create uniform buffer (one for each frame)
+    VkBuffer* uniformBuffers = alloc_array(&appArena, VkBuffer, framesInFlight);
+    VkDeviceMemory* uniformBuffersMemory = alloc_array(&appArena, VkDeviceMemory, framesInFlight);
+    void** uniformBuffersCPUMapped = alloc_array(&appArena, void*, framesInFlight);
+    {
+        for (int i = 0; i < framesInFlight; i++) {
+            VkDeviceSize size = sizeof(UniformBufferObject);
+            create_buffer(
+                    &ctx, 
+                    sizeof(UniformBufferObject),
+                    VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 
+                    VK_SHARING_MODE_EXCLUSIVE, 
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                    uniformBuffers + i,
+                    uniformBuffersMemory + i);
+            vkMapMemory(ctx.device.handle, uniformBuffersMemory[i], 0, size, 0, uniformBuffersCPUMapped + i);
+            memset(uniformBuffersCPUMapped[i], 0, sizeof(UniformBufferObject));
+        }
+    }
+
+    // descriptor sets
+    VkDescriptorSetLayout descriptorSetLayout; // for pipeline
+    VkDescriptorPool descriptorPool;
+    VkDescriptorSet* descriptorSets = alloc_array(&appArena, VkDescriptorSet, framesInFlight);
+    {
+        VkDescriptorSetLayoutBinding uboLayoutBinding = {
+            .binding = 0,
+            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT
+        };
+        VkDescriptorSetLayoutCreateInfo layoutInfo = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            .bindingCount = 1,
+            .pBindings = &uboLayoutBinding
+        };
+
+        res = vkCreateDescriptorSetLayout(ctx.device.handle, &layoutInfo, NULL, &descriptorSetLayout);
+        assert(res == VK_SUCCESS);
+
+        // descriptor pools
+        VkDescriptorPoolSize poolSize = {
+            .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .descriptorCount = framesInFlight
+        };
+        VkDescriptorPoolCreateInfo poolInfo = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+            .maxSets = framesInFlight,
+            .poolSizeCount = 1,
+            .pPoolSizes = &poolSize
+        };
+
+        res = vkCreateDescriptorPool(ctx.device.handle, &poolInfo, NULL, &descriptorPool);
+        assert(res == VK_SUCCESS);
+
+        // Allocate the same descriptor set for each frame
+        VkDescriptorSetLayout* layouts = alloc_array(&scratchArena, VkDescriptorSetLayout, framesInFlight);
+        for (int i = 0; i < framesInFlight; i++) {
+            layouts[i] = descriptorSetLayout;
+        }
+
+        VkDescriptorSetAllocateInfo setAllocInfo = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool = descriptorPool,
+            .descriptorSetCount = framesInFlight,
+            .pSetLayouts = layouts
+        };
+        res = vkAllocateDescriptorSets(ctx.device.handle, &setAllocInfo, descriptorSets);
+        assert(res == VK_SUCCESS);
+
+        // fill in descriptor set (table) with info about which buffer to use, offset and range 
+        // (should obviously match the layout binding that we will put in the pipeline)
+        for (int i = 0; i < framesInFlight; i++) {
+            VkDescriptorBufferInfo bufferInfo = {
+                .buffer = uniformBuffers[i],
+                .offset = 0,
+                .range = sizeof(UniformBufferObject)
+            };
+            VkWriteDescriptorSet descriptorWrite = {
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = descriptorSets[i],
+                .dstBinding = 0,
+                .dstArrayElement = 0,
+                .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                .descriptorCount = 1,
+                .pBufferInfo = &bufferInfo
+            };
+            // TODO: check what copy params mean and if this can be outside loop in that case
+            vkUpdateDescriptorSets(ctx.device.handle, 1, &descriptorWrite, 0, NULL);
+        }
+    }
+    arena_reset(&scratchArena);
 
     // create ctx.pipeline
     {
@@ -388,13 +499,13 @@ int main(int argc, char** argv) {
         };
         // Dynamic State?
 
-        // Pipeline layout (uniforms and shit)
+        // Pipeline layout (descriptor sets)
         VkPipelineLayoutCreateInfo pipelineLayoutInfo = {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO
-                // TODO: uniforms go here
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .setLayoutCount = 1,
+            .pSetLayouts = &descriptorSetLayout
         };
-        VkPipelineLayout pipelineLayout;
-        res = vkCreatePipelineLayout(ctx.device.handle, &pipelineLayoutInfo, NULL, &pipelineLayout);
+        res = vkCreatePipelineLayout(ctx.device.handle, &pipelineLayoutInfo, NULL, &ctx.pipelineLayout);
         assert(res == VK_SUCCESS);
 
         VkGraphicsPipelineCreateInfo pipelineInfo = {
@@ -411,7 +522,7 @@ int main(int argc, char** argv) {
             .pColorBlendState = &blendStateInfo,
             .pDynamicState = &dynamicStateInfo,
             // skipping dynamic state
-            .layout = pipelineLayout,
+            .layout = ctx.pipelineLayout,
             .renderPass = ctx.renderPass,
             .subpass = 0,
         };
@@ -445,19 +556,18 @@ int main(int argc, char** argv) {
         res = vkCreateCommandPool(ctx.device.handle, &info, NULL, &transientPool);
         assert(res == VK_SUCCESS);
     }
+
     // allocate vertices
     Vertex_t vertices[] = {
-        {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
-        {{ 0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
-        {{ 0.5f,  0.5f}, {0.0f, 0.0f, 1.0f}},
-        {{-0.5f,  0.5f}, {1.0f, 1.0f, 1.0f}}
+        {{-0.5f,  0.5f}, {1.0f, 0.0f, 0.0f}},
+        {{ 0.5f,  0.5f}, {0.0f, 1.0f, 0.0f}},
+        {{ 0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}},
+        {{-0.5f, -0.5f}, {1.0f, 1.0f, 1.0f}}
     };
 
     u16 indices[] = {
         0, 1, 2, 2, 3, 0
     };
-
-    // TODO: staging buffer, learn what that even is lol
 
     // create vertex buffer
     VkBuffer vertexBuffer;
@@ -543,10 +653,6 @@ int main(int argc, char** argv) {
         do { XNextEvent(display, &e); } while (e.type != ConfigureNotify);
     }
 
-    // get image count here to determine max frames in flight, does that even make sense?
-    u32 imageCount = get_surface_capabilities_image_count(&ctx);
-    u32 framesInFlight = MIN(imageCount, MAX_FRAMES_IN_FLIGHT);
-
     // create command buffers
     VkCommandBuffer* cmdBufs = alloc_array(&appArena, VkCommandBuffer, framesInFlight);
     {
@@ -561,22 +667,28 @@ int main(int argc, char** argv) {
     }
 
     VkSemaphore* imageAvailableSemaphores = alloc_array(&appArena, VkSemaphore, framesInFlight);
-    VkSemaphore* renderFinishedSemaphores = alloc_array(&appArena, VkSemaphore, framesInFlight);
+    VkSemaphore* renderFinishedSemaphores = alloc_array(&appArena, VkSemaphore, imageCount);
     VkFence* inFlightFences = alloc_array(&appArena, VkFence, framesInFlight);
     {
+        VkSemaphoreCreateInfo semInfo = {
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO
+        };
+        VkFenceCreateInfo fenceInfo = {
+            .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+            .flags = VK_FENCE_CREATE_SIGNALED_BIT // first wait doesn't block
+        };
+
+        // image available and fences are tied to frame lifetime
         for (int i = 0; i < framesInFlight; i++) {
-            VkSemaphoreCreateInfo semInfo = {
-                .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO
-            };
-            VkFenceCreateInfo fenceInfo = {
-                .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-                .flags = VK_FENCE_CREATE_SIGNALED_BIT // first wait doesn't block
-            };
             res = vkCreateSemaphore(ctx.device.handle, &semInfo, NULL, &imageAvailableSemaphores[i]);
             assert(res == VK_SUCCESS);
-            res = vkCreateSemaphore(ctx.device.handle, &semInfo, NULL, &renderFinishedSemaphores[i]);
-            assert(res == VK_SUCCESS);
             res = vkCreateFence(ctx.device.handle, &fenceInfo, NULL, &inFlightFences[i]);
+            assert(res == VK_SUCCESS);
+        }
+
+        // render finished isn't and must be indexed based on what acquire returns
+        for (int i = 0; i < imageCount; i++) {
+            res = vkCreateSemaphore(ctx.device.handle, &semInfo, NULL, &renderFinishedSemaphores[i]);
             assert(res == VK_SUCCESS);
         }
     }
@@ -605,12 +717,14 @@ int main(int argc, char** argv) {
     u8 swapchainCooldown = 0;
     bool recreateSwapchain = false;
     XEvent e;
+    u64 start_time = get_time_ns();
+    u64 curr_time = start_time;
 
     while(running) {
+        curr_time = get_time_ns(); // TODO: fix time loop
         // wait for next sync objects
         VkFence fence = inFlightFences[frame];
         VkSemaphore imageAvailableSemaphore = imageAvailableSemaphores[frame];
-        VkSemaphore renderFinishedSemaphore = renderFinishedSemaphores[frame];
         VkCommandBuffer cmdBuf = cmdBufs[frame];
         vkWaitForFences(ctx.device.handle, 1, &fence, VK_TRUE, UINT64_MAX);
 
@@ -623,8 +737,8 @@ int main(int argc, char** argv) {
             switch (e.type) {
                 case ConfigureNotify:
                     {
-                        if(swapchainCooldown == 0 && (e.xconfigure.width != ctx.device.surfaceCapabilities.currentExtent.width
-                                    || e.xconfigure.height != ctx.device.surfaceCapabilities.currentExtent.height)) {
+                        if(swapchainCooldown == 0 && (e.xconfigure.width != ctx.physicalDevice.selected->surfaceCapabilities.currentExtent.width
+                                    || e.xconfigure.height != ctx.physicalDevice.selected->surfaceCapabilities.currentExtent.height)) {
                             recreateSwapchain = true;
                         }
                     }
@@ -657,7 +771,7 @@ int main(int argc, char** argv) {
         if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR || recreateSwapchain) {
             vkDeviceWaitIdle(ctx.device.handle);
             // update capabilities (extents)
-            res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(ctx.physicalDevice.selected->handle, ctx.surface, &ctx.device.surfaceCapabilities);
+            res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(ctx.physicalDevice.selected->handle, ctx.surface, &ctx.physicalDevice.selected->surfaceCapabilities);
             // create new (transition from old)
             arena_t swapchainArena;
             arena_init(&swapchainArena, block_alloc(&swapchainAlloc), swapchainAlloc.blockSize);
@@ -689,7 +803,7 @@ int main(int argc, char** argv) {
             .renderPass = ctx.renderPass,
             .framebuffer = ctx.device.swapchain->framebuffers[imageIndex],
             .renderArea.offset = {0,0},
-            .renderArea.extent = ctx.device.surfaceCapabilities.currentExtent,
+            .renderArea.extent = ctx.physicalDevice.selected->surfaceCapabilities.currentExtent,
             .clearValueCount = 1,
             .pClearValues = &clearColor
         };
@@ -699,8 +813,8 @@ int main(int argc, char** argv) {
         VkViewport viewport = {
             .x = 0.0f,
             .y = 0.0f,
-            .width  = ctx.device.surfaceCapabilities.currentExtent.width,
-            .height = ctx.device.surfaceCapabilities.currentExtent.height,
+            .width  = ctx.physicalDevice.selected->surfaceCapabilities.currentExtent.width,
+            .height = ctx.physicalDevice.selected->surfaceCapabilities.currentExtent.height,
             .minDepth = 0.0f,
             .maxDepth = 1.0f
         };
@@ -708,7 +822,7 @@ int main(int argc, char** argv) {
 
         VkRect2D scissor = {
             .offset = {0, 0},
-            .extent = ctx.device.surfaceCapabilities.currentExtent
+            .extent = ctx.physicalDevice.selected->surfaceCapabilities.currentExtent
         };
 
         vkCmdSetScissor(cmdBuf, 0, 1, &scissor);
@@ -716,10 +830,53 @@ int main(int argc, char** argv) {
         VkDeviceSize offsets[] = {0};
         vkCmdBindVertexBuffers(cmdBuf, 0, 1, &vertexBuffers, offsets);
         vkCmdBindIndexBuffer(cmdBuf, indexBuffer, 0, VK_INDEX_TYPE_UINT16);
+        // update uniforms and bind them
+        {
+            UniformBufferObject* uniform = (UniformBufferObject*)uniformBuffersCPUMapped[frame];
+
+            float aspect = (float)ctx.physicalDevice.selected->surfaceCapabilities.currentExtent.width / 
+                ctx.physicalDevice.selected->surfaceCapabilities.currentExtent.height;
+            float fov_rads = PI/4;
+
+            float rot_speed = 1.0f;
+            //float rotation = 2 * PI; // for now
+            float rotation = 2 * PI * ((float)(curr_time - start_time)/ 1000000000ull);
+            rotation *= rot_speed;
+
+            mat4 proj, camera, view, model;
+            // write uniform data
+            mat4_perspective(&proj, fov_rads, aspect, 0.1f, 100.0f);
+            mat4_look_at(&camera, (vec3){2,2,2}, (vec3){0,0,0}, (vec3){0,1,0});
+            mat4_inverse_rigid(&view, &camera);
+            mat4_rotation(&model, rotation, (vec3){0.0f, 0.0f, 1.0f});
+            //mat4 model = mat4_identity;
+
+            uniform->proj = proj;
+            uniform->view = view;
+            uniform->model = model;
+
+            // for debug
+            for (int i = 0; i < LEN(vertices); i++) {
+                Vertex_t v = vertices[i];
+                vec4 pos = {v.pos.x, v.pos.y, 0.0f, 1.0f};
+                vec4 mod = mat4_apply(&model, pos);
+                vec4 vi = mat4_apply(&view, mod);
+                vec4 clip = mat4_apply(&proj, vi);
+                vec3 ndc = {clip.x / clip.w, clip.y / clip.w, clip.z / clip.w};
+
+                //printf("clip: %f %f %f %f\n", clip.x, clip.y, clip.z, clip.w);
+                //printf("ndc: %f %f %f\n", ndc.x, ndc.y, ndc.z);
+            }
+        }
+        vkCmdBindDescriptorSets(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, ctx.pipelineLayout, 0, 1, &descriptorSets[frame], 0,  NULL);
         vkCmdDrawIndexed(cmdBuf, LEN(indices), 1, 0, 0, 0);
         vkCmdEndRenderPass(cmdBuf);
         res = vkEndCommandBuffer(cmdBuf);
         assert(res == VK_SUCCESS);
+
+
+        VkSemaphore renderFinishedSemaphore = renderFinishedSemaphores[imageIndex];
+        // do I need an additional fence here then, before passing it to submit?
 
         // submit to cmd buf
         VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};

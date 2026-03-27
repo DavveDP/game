@@ -1,11 +1,13 @@
 #!/bin/bash
 
-FLAGS="-g -std=c23 -Wall -Werror"
+FLAGS="-g -std=c23 -Wall -Werror -Wno-unused-variable -Wno-unused-but-set-variable"
 INCLUDE="-I$VULKAN_SDK/include -I."
-LIB="-L$VULKAN_SDK/lib -lvulkan -lX11"
+LIB="-L$VULKAN_SDK/lib -lvulkan -lX11 -lm"
 SRC="linux_main.c"
 FILENAME="bin/game"
 
+glslc shader.vert -o vertex.spv
+glslc shader.frag -o fragment.spv
 clang-21 -o $FILENAME $FLAGS $SRC $INCLUDE $LIB $1
 
 #fix tags

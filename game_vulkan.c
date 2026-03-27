@@ -31,6 +31,8 @@ typedef struct PhysicalDevice {
         VkSurfaceFormatKHR* items;
         VkSurfaceFormatKHR selected;
     } formats;
+
+    VkSurfaceCapabilitiesKHR surfaceCapabilities;
 } PhysicalDevice;
 
 typedef struct Swapchain {
@@ -59,7 +61,6 @@ typedef struct LogicalDevice {
         VkQueue present;
     } queueHandles;
     Swapchain* swapchain;
-    VkSurfaceCapabilitiesKHR surfaceCapabilities;
 } LogicalDevice;
 
 typedef struct VulkanCtx {
@@ -74,15 +75,8 @@ typedef struct VulkanCtx {
     VkSurfaceKHR surface;
     VkRenderPass renderPass;
     VkPipeline pipeline;
+    VkPipelineLayout pipelineLayout;
 } VulkanCtx;
-
-typedef struct vec3 {
-    float x, y, z;
-} vec3;
-
-typedef struct vec2 {
-    float x, y;
-} vec2;
 
 //typedef struct Vertex_t {
 //    vec3 pos;
@@ -94,6 +88,12 @@ typedef struct Vertex_t {
     vec2 pos;
     vec3 color;
 } Vertex_t;
+
+typedef struct UniformBufferObject {
+    alignas(16) mat4 proj;
+    alignas(16) mat4 view; // camera
+    alignas(16) mat4 model;
+} UniformBufferObject;
 
 
 VkResult vulkan_create_instance(VkInstance* instance) {
@@ -154,7 +154,7 @@ void vulkan_create_logical_device(VulkanCtx* ctx) {
 }
 
 u32 get_surface_capabilities_image_count(VulkanCtx* ctx) {
-    LogicalDevice* device = &ctx->device;
+    PhysicalDevice* device = ctx->physicalDevice.selected;
     VkResult res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(ctx->physicalDevice.selected->handle, ctx->surface, &device->surfaceCapabilities);
     assert(res == VK_SUCCESS);
     assert(device->surfaceCapabilities.currentExtent.width != UINT32_MAX); // TODO: need to handle different if not X11
@@ -220,13 +220,13 @@ void create_and_set_new_swapchain(arena_t* swapchainArena, u32 imageCount, Vulka
         .minImageCount =         imageCount,
         .imageFormat =           physDevice->formats.selected.format,
         .imageColorSpace =       physDevice->formats.selected.colorSpace,
-        .imageExtent =           device->surfaceCapabilities.currentExtent,
+        .imageExtent =           physDevice->surfaceCapabilities.currentExtent,
         .imageArrayLayers =      1,
         .imageUsage =            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
         .imageSharingMode =      VK_SHARING_MODE_EXCLUSIVE,
         .queueFamilyIndexCount = 0,
         .pQueueFamilyIndices =   NULL,
-        .preTransform =          device->surfaceCapabilities.currentTransform,
+        .preTransform =          physDevice->surfaceCapabilities.currentTransform,
         .compositeAlpha =        VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
         .presentMode =           physDevice->presentMode,
         .clipped =               VK_TRUE,
@@ -276,8 +276,8 @@ void create_and_set_new_swapchain(arena_t* swapchainArena, u32 imageCount, Vulka
             .renderPass = ctx->renderPass,
             .attachmentCount = 1,
             .pAttachments = &device->swapchain->imageViews[i],
-            .width = device->surfaceCapabilities.currentExtent.width,
-            .height = device->surfaceCapabilities.currentExtent.height,
+            .width = physDevice->surfaceCapabilities.currentExtent.width,
+            .height = physDevice->surfaceCapabilities.currentExtent.height,
             .layers = 1
         };
         res = vkCreateFramebuffer(device->handle, &framebufferInfo, NULL, &device->swapchain->framebuffers[i]);
@@ -335,6 +335,7 @@ void create_buffer(
         .memoryTypeIndex = memTypeIndex
     };
 
+    // TODO: create allocator (that offsets using bind instead), can't make unlimited of these calls
     res = vkAllocateMemory(ctx->device.handle, &allocInfo, NULL, memory);
     assert(res == VK_SUCCESS);
 
