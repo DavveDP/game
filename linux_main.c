@@ -6,7 +6,6 @@
 #include <stdint.h>
 #include <string.h>
 
-
 typedef uint64_t u64;
 typedef uint32_t u32;
 typedef uint16_t u16;
@@ -38,6 +37,9 @@ typedef int8_t  i8;
 #include <math.c> // uses math.h and links with math
 
 #include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <signal.h>
 #include <stdio.h>
 #include <time.h>
@@ -50,6 +52,40 @@ u64 get_time_ns() {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (u64)ts.tv_sec * 1000000000ull + ts.tv_nsec;
+}
+
+// TODO: figure out how to pass generic allocators, 
+// tagged union for allocator types?
+u8* read_file(arena_t* allocator, const char* path, size_t* out_size) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return NULL;
+
+    struct stat st;
+    if (fstat(fd, &st) != 0) {
+        close(fd);
+        return NULL;
+    }
+
+    size_t size = st.st_size;
+    u8* data = alloc_array(allocator, u8, size);
+    if (!data) {
+        close(fd);
+        return NULL;
+    }
+
+    FILE* f = fdopen(fd, "rb");
+    if (!f) {
+        close(fd);
+        return NULL;
+    }
+    size_t n = fread(data, 1, size, f);
+    fclose(f);
+
+    if (n != size) {
+        return NULL;
+    }
+    if (out_size) *out_size = size;
+    return data;
 }
 
 // audio
@@ -391,24 +427,25 @@ int main(int argc, char** argv) {
     // create ctx.pipeline
     {
         // create shader stages
-        static alignas(4) const u8 vertexCode[] = {
-#embed "vertex.spv"
-        };
-        static alignas(4) const u8 fragmentCode[] = {
-#embed "fragment.spv"
-        };
+
+        size_t vertexCodeSize = 0;
+        u8* vertexCode = read_file(&scratchArena, "vertex.spv", &vertexCodeSize);
+        assert(vertexCode != NULL);
+        size_t fragmentCodeSize = 0;
+        u8* fragmentCode = read_file(&scratchArena, "fragment.spv", &fragmentCodeSize);
+        assert(fragmentCode != NULL);
 
         VkPipelineShaderStageCreateInfo stages[] = {
             {
                 .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                 .stage = VK_SHADER_STAGE_VERTEX_BIT,
-                .module = create_shader_module(ctx.device.handle, (const u32*)vertexCode, sizeof(vertexCode), &res),
+                .module = create_shader_module(ctx.device.handle, (const u32*)vertexCode, vertexCodeSize, &res),
                 .pName = "main"
             },
             {
                 .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                 .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-                .module = create_shader_module(ctx.device.handle, (const u32*)fragmentCode, sizeof(fragmentCode), &res),
+                .module = create_shader_module(ctx.device.handle, (const u32*)fragmentCode, fragmentCodeSize, &res),
                 .pName = "main"
             }
         };
@@ -497,7 +534,6 @@ int main(int argc, char** argv) {
             .attachmentCount = 1,
             .pAttachments = &blendAttachment
         };
-        // Dynamic State?
 
         // Pipeline layout (descriptor sets)
         VkPipelineLayoutCreateInfo pipelineLayoutInfo = {
@@ -629,6 +665,7 @@ int main(int argc, char** argv) {
         vkDestroyBuffer(ctx.device.handle, stagingBuffer, NULL);
         vkFreeMemory(ctx.device.handle, stagingBufferMemory, NULL);
     }
+    arena_reset(&scratchArena);
 
     // Init window
 

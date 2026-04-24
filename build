@@ -4,7 +4,7 @@ FLAGS="-g -std=c23 -Wall -Werror -Wno-unused-variable -Wno-unused-but-set-variab
 INCLUDE="-I$VULKAN_SDK/include -I."
 LIB="-L$VULKAN_SDK/lib -lvulkan -lX11 -lm"
 SRC="linux_main.c"
-FILENAME="bin/game"
+FILENAME="bin/a"
 
 glslc shader.vert -o vertex.spv
 glslc shader.frag -o fragment.spv

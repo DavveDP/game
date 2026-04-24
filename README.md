@@ -1,3 +1,5 @@
-# Vulkan game
+# EDAN70 project: terrain generation
 
-Exploring 3d graphics with vulkan
+## Roadmap
+
+1. Render points of implicit surface generated via compute
