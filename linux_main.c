@@ -5,36 +5,18 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include <defines.h>
 
-typedef uint64_t u64;
-typedef uint32_t u32;
-typedef uint16_t u16;
-typedef uint8_t  u8;
-
-typedef int64_t i64;
-typedef int32_t i32;
-typedef int16_t i16;
-typedef int8_t  i8;
-
-#define false 0
-#define true 0
-
-#define MAX_FRAMES_IN_FLIGHT 3
-
-#define GB(n) (1ull << 30)
-#define MB(n) (1ull << 20)
-#define KB(n) (1ull << 10)
-#define LEN(arr) (sizeof(arr) / sizeof(arr[0]))
-#define MIN(X, Y) (X) < (Y) ? (X) : (Y)
 //#define CLAMP(X, Min, Max) \
 //    (X) > (Max) ? (Max) : ((X) < Min ? Min : (X))
+
+#define MAX_FRAMES_IN_FLIGHT 3
 
 #include <models.c> // just a bunch of embed directives
 
 // Begin Platfrom specific code
 
 #include <linux_alloc.c>
-#include <math.c> // uses math.h and links with math
 
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -44,9 +26,71 @@ typedef int8_t  i8;
 #include <stdio.h>
 #include <time.h>
 #include <X11/Xlib.h>
+#include <X11/XKBlib.h>
 #define VK_USE_PLATFORM_XLIB_KHR
+#include <math.c> // uses math.h and links with math
 #include <vulkan/vulkan.h>
 #include <game_vulkan.c> 
+#include <mesh.c>
+#include <game.c>
+
+enum X11_KEY_CODES_t {
+    X11_KEY_CODE_W = 25,
+    X11_KEY_CODE_A = 38,
+    X11_KEY_CODE_S = 39,
+    X11_KEY_CODE_D = 40,
+    X11_KEY_CODE_UP = 111,
+    X11_KEY_CODE_LEFT = 113,
+    X11_KEY_CODE_RIGHT = 114,
+    X11_KEY_CODE_DOWN = 116
+    //...
+};
+
+// Key input
+
+u8 key_states[256];
+
+enum KEY_STATE {
+    KEY_STATE_RELEASED_THIS_UPDATE = 1,
+    KEY_STATE_PRESSED_THIS_UPDATE = 2,
+    KEY_STATE_HELD = 3
+};
+
+static bool key_released(u8 key) {
+    return key_states[key] == KEY_STATE_RELEASED_THIS_UPDATE;
+}
+
+static bool key_pressed(u8 key) {
+    return key_states[key] == KEY_STATE_PRESSED_THIS_UPDATE;
+}
+
+static bool key_held(u8 key) {
+    return key_states[key] == KEY_STATE_HELD;
+}
+
+static bool key_held_or_pressed(u8 key) {
+    return key_states[key] & 2; // check second bit
+}
+
+void update_key_state(int event_type, u8 key) {
+    // set second bit
+    u8* s = &key_states[key];
+    switch(event_type) {
+        case KeyPress: 
+            *s = (*s >> 1) | 2;
+            break; // 1
+        case KeyRelease: 
+            *s = *s != 0;
+            break; // 0
+    }
+}
+
+void end_of_frame_key_update(void) {
+    for (int i = 0; i < 256; i++) {
+        u8 *s = &key_states[i];
+        *s = (*s >> 1) | (*s & 2);
+    }
+}
 
 u64 get_time_ns() {
     struct timespec ts;
@@ -88,12 +132,6 @@ u8* read_file(arena_t* allocator, const char* path, size_t* out_size) {
     return data;
 }
 
-// audio
-// input
-// time
-// disk, only required for save games
-// (network)
-
 Atom WM_DELETE_WINDOW;
 Atom NET_WM_PING;
 Atom WM_PROTOCOLS;
@@ -105,6 +143,12 @@ void sigint_and_sigterm_handler(int sig) {
 }
 
 int main(int argc, char** argv) {
+    //world_t world;
+    //world.main_camera = camera_looking_at_from((vec3){0,0,0}, (vec3){0,2,0,});
+    //quat_print(world.main_camera.transform.rot, printf);
+    //mat4 m = transform_to_view_matrix(&world.main_camera.transform);
+    //mat4_print(&m, printf);
+    //return 0;
     // Signal handling
     signal(SIGINT, sigint_and_sigterm_handler);
     signal(SIGTERM, sigint_and_sigterm_handler);
@@ -118,8 +162,8 @@ int main(int argc, char** argv) {
     // create scratchArena (nested arena)
     arena_t scratchArena;
     arena_init(&scratchArena, 
-            alloc_array(&appArena, u8, MB(1)),
-            MB(1)
+            alloc_array(&appArena, u8, MB(16)),
+            MB(16)
     );
 
     VulkanCtx ctx;
@@ -129,11 +173,19 @@ int main(int argc, char** argv) {
 
     printf("instance created!\n");
 
+    // x11_init function maybe?
+    //
     // platform specific stuff to create surface
     Display* display;
     Window window;
     {
         display = XOpenDisplay(NULL);
+
+        // assert xkb support, disabling auto release events
+        int supported;
+        XkbSetDetectableAutoRepeat(display, true, &supported);
+        assert(supported);
+
         window = XCreateSimpleWindow(
                 display, 
                 RootWindow(display, DefaultScreen(display)), 
@@ -172,8 +224,7 @@ int main(int argc, char** argv) {
             PhysicalDevice* validDevice = alloc(&appArena, PhysicalDevice);
 
             validDevice->handle = handles[i];
-            VkPhysicalDeviceProperties props;
-            vkGetPhysicalDeviceProperties(handles[i], &props);
+            vkGetPhysicalDeviceProperties(handles[i], &validDevice->props);
             u32 propCount;
             vkEnumerateDeviceExtensionProperties(handles[i], NULL, &propCount, NULL);
             VkExtensionProperties* extProps = alloc_array(&scratchArena, VkExtensionProperties, propCount);
@@ -254,9 +305,13 @@ int main(int argc, char** argv) {
                     validDevice->presentMode = VK_PRESENT_MODE_MAILBOX_KHR;
                 }
             }
+            // additional features
+            VkPhysicalDeviceFeatures features;
+            vkGetPhysicalDeviceFeatures(handles[i], &features);
+                if (!features.fillModeNonSolid) continue;
             
             // this is a valid device
-            printf("Found device: %s\n", props.deviceName);
+            printf("Found device: %s\n", validDevice->props.deviceName);
             // first device is assigned to the ptr
             if (ctx.physicalDevice.count == 0) {
                 ctx.physicalDevice.all = validDevice;
@@ -266,10 +321,11 @@ int main(int argc, char** argv) {
             validDeviceMark = arena_mark(&appArena); 
         }
     }
-    assert(ctx.physicalDevice.all != NULL && ctx.physicalDevice.count > 0);
     arena_reset(&scratchArena);
+    assert(ctx.physicalDevice.all != NULL && ctx.physicalDevice.count > 0);
     // select device, can be changed later based on some scoring I guess
     ctx.physicalDevice.selected = &ctx.physicalDevice.all[0];
+    printf("Selected device: %s\n", ctx.physicalDevice.selected->props.deviceName);
     vulkan_create_logical_device(&ctx);
 
     // get image count here to determine max frames in flight, does that even make sense?
@@ -328,6 +384,7 @@ int main(int argc, char** argv) {
         res = vkCreateRenderPass(ctx.device.handle, &renderPassInfo, NULL, &ctx.renderPass);
         assert(res == VK_SUCCESS);
     }
+
 
     // create uniform buffers before pipeline kinda makes sense right?
     // or at least close to one another.
@@ -463,8 +520,7 @@ int main(int argc, char** argv) {
         //};
         // placeholder
         VkVertexInputAttributeDescription vertexAttr[] = {
-            { .location = 0, .binding = 0, .format = VK_FORMAT_R32G32_SFLOAT,    .offset = offsetof(Vertex_t, pos)     },
-            { .location = 1, .binding = 0, .format = VK_FORMAT_R32G32B32_SFLOAT, .offset = offsetof(Vertex_t, color)   },
+            { .location = 0, .binding = 0, .format = VK_FORMAT_R32G32B32_SFLOAT,    .offset = offsetof(Vertex_t, pos)     }
         };
 
         VkPipelineVertexInputStateCreateInfo vertexInputInfo = {
@@ -506,8 +562,8 @@ int main(int argc, char** argv) {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
             .depthClampEnable = VK_FALSE,
             .rasterizerDiscardEnable = VK_FALSE,
-            .polygonMode = VK_POLYGON_MODE_FILL,
-            .cullMode = VK_CULL_MODE_BACK_BIT,
+            .polygonMode = VK_POLYGON_MODE_LINE,
+            .cullMode = VK_CULL_MODE_NONE,
             .frontFace = VK_FRONT_FACE_CLOCKWISE,
             .depthBiasEnable = VK_FALSE,
             .lineWidth = 1.0f
@@ -593,85 +649,119 @@ int main(int argc, char** argv) {
         assert(res == VK_SUCCESS);
     }
 
+    init_staging_buffers(&ctx);
+
     // allocate vertices
-    Vertex_t vertices[] = {
-        {{-0.5f,  0.5f}, {1.0f, 0.0f, 0.0f}},
-        {{ 0.5f,  0.5f}, {0.0f, 1.0f, 0.0f}},
-        {{ 0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}},
-        {{-0.5f, -0.5f}, {1.0f, 1.0f, 1.0f}}
-    };
-
-    u16 indices[] = {
-        0, 1, 2, 2, 3, 0
-    };
-
-    // create vertex buffer
-    VkBuffer vertexBuffer;
-    VkDeviceMemory vertexBufferMemory;
-    VkBuffer indexBuffer;
-    VkDeviceMemory indexBufferMemory;
+    const u8 n_index_buffers = 8; // subdiv count + 1
+    u32 n_vertices = 0;
+    u32* n_indices = NULL;
+    VkBuffer patch_buffer;
+    VkDeviceMemory patch_buffer_gpu_mem;
     {
-        // create staging buffer
-        VkBuffer stagingBuffer;
-        VkDeviceMemory stagingBufferMemory;
-        create_buffer(&ctx, 
-                sizeof(vertices), 
-                VK_BUFFER_USAGE_TRANSFER_SRC_BIT, 
-                VK_SHARING_MODE_EXCLUSIVE,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                &stagingBuffer, 
-                &stagingBufferMemory);
+        u8 n_subdiv = n_index_buffers - 1;
+        n_indices = alloc_array(&appArena, u32, n_index_buffers);
+        subdiv_plane(n_subdiv, NULL, 0, &n_vertices, NULL, n_indices);
 
+        // allocate CPU temp buffers and count total size
+        u64 total_size = n_vertices * sizeof(Vertex_t);
+        Vertex_t* vertices = alloc_array(&scratchArena, Vertex_t, n_vertices);
+        printf("total_size (verts): %lu\n", total_size);
+
+        u16** indices = alloc_array(&scratchArena, u16*, n_index_buffers);
+        for (u16 i = 0; i < n_index_buffers; i++) {
+            indices[i] = alloc_array(&scratchArena, u16, n_indices[i]);
+            total_size += n_indices[i] * sizeof(u16);
+            printf("indices %hu: %u\n", i, n_indices[i]);
+        }
+        printf("total_size (verts + indices): %lu\n", total_size);
+
+        // generate mesh
+        subdiv_plane(n_subdiv, &vertices->pos, sizeof(*vertices), &n_vertices, indices, n_indices);
+
+        // create gpu buffer
         create_buffer(&ctx,
-                sizeof(vertices),
-                VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                total_size,
+                VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
                 VK_SHARING_MODE_EXCLUSIVE,
                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                &vertexBuffer,
-                &vertexBufferMemory);
+                &patch_buffer,
+                &patch_buffer_gpu_mem);
 
-        create_buffer(&ctx,
-                sizeof(indices),
-                VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-                VK_SHARING_MODE_EXCLUSIVE,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                &indexBuffer,
-                &indexBufferMemory);
+        // copy all data to staging so that layout is:
+        // vertex, ib1, ib2, ...
+        memcpy(ctx.stagingBuffer_cpu_mem, vertices, n_vertices * sizeof(*vertices));
+        u8* p = ctx.stagingBuffer_cpu_mem + n_vertices * sizeof(*vertices);
+        for (u16 i = 0; i < n_index_buffers; i++) {
+            memcpy(p, indices[i], n_indices[i] * sizeof(**indices));
+            p += n_indices[i] * sizeof(**indices);
+        }
 
-        // upload vertex data
-        void* data;
-        vkMapMemory(ctx.device.handle, stagingBufferMemory, 0, sizeof(vertices), 0, &data);
-        memcpy(data, vertices, (size_t) sizeof(vertices));
-        vkUnmapMemory(ctx.device.handle, stagingBufferMemory);
-
-        staging_buffer_upload_t uploadInfo = {
-            .copyRegion = {0, 0, sizeof(vertices)},
-            .src = stagingBuffer,
-            .dst = vertexBuffer
+        // upload
+        staging_buffer_upload_t upload_info = {
+            .copyRegion = (VkBufferCopy){0, 0, total_size},
+            .src = ctx.stagingBuffer,
+            .dst = patch_buffer
         };
-        upload_staging_buffer(&ctx, &uploadInfo, transientPool); // waits on device idle
-
-        // upload index data
-        vkMapMemory(ctx.device.handle, stagingBufferMemory, 0, sizeof(indices), 0, &data);
-        memcpy(data, indices, (size_t) sizeof(indices));
-        vkUnmapMemory(ctx.device.handle, stagingBufferMemory);
-
-        uploadInfo.copyRegion = (VkBufferCopy){0, 0, sizeof(indices)};
-        uploadInfo.src = stagingBuffer;
-        uploadInfo.dst = indexBuffer;
-        upload_staging_buffer(&ctx, &uploadInfo, transientPool); // waits on device idle
-
-        res = vkResetCommandPool(ctx.device.handle, transientPool, 0);
-        vkDestroyBuffer(ctx.device.handle, stagingBuffer, NULL);
-        vkFreeMemory(ctx.device.handle, stagingBufferMemory, NULL);
+        upload_staging_buffer(&ctx, &upload_info, transientPool);
     }
     arena_reset(&scratchArena);
+
+    // create vertex buffer
+//    VkBuffer vertexBuffer;
+//    VkDeviceMemory vertexBufferMemory;
+//    VkBuffer indexBuffer;
+//    VkDeviceMemory indexBufferMemory;
+//    {
+//        create_buffer(&ctx,
+//                sizeof(vertices),
+//                VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+//                VK_SHARING_MODE_EXCLUSIVE,
+//                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+//                &vertexBuffer,
+//                &vertexBufferMemory);
+//
+//        create_buffer(&ctx,
+//                sizeof(indices),
+//                VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+//                VK_SHARING_MODE_EXCLUSIVE,
+//                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+//                &indexBuffer,
+//                &indexBufferMemory);
+//
+//        // upload vertex data
+//        void* data;
+//        vkMapMemory(ctx.device.handle, stagingBufferMemory, 0, sizeof(vertices), 0, &data);
+//        memcpy(data, vertices, (size_t) sizeof(vertices));
+//        vkUnmapMemory(ctx.device.handle, stagingBufferMemory);
+//
+//        staging_buffer_upload_t uploadInfo = {
+//            .copyRegion = {0, 0, sizeof(vertices)},
+//            .src = stagingBuffer,
+//            .dst = vertexBuffer
+//        };
+//        upload_staging_buffer(&ctx, &uploadInfo, transientPool); // waits on device idle
+//
+//        // upload index data
+//        vkMapMemory(ctx.device.handle, stagingBufferMemory, 0, sizeof(indices), 0, &data);
+//        memcpy(data, indices, (size_t) sizeof(indices));
+//        vkUnmapMemory(ctx.device.handle, stagingBufferMemory);
+//
+//        uploadInfo.copyRegion = (VkBufferCopy){0, 0, sizeof(indices)};
+//        uploadInfo.src = stagingBuffer;
+//        uploadInfo.dst = indexBuffer;
+//        upload_staging_buffer(&ctx, &uploadInfo, transientPool); // waits on device idle
+//
+//        res = vkResetCommandPool(ctx.device.handle, transientPool, 0);
+//        vkDestroyBuffer(ctx.device.handle, stagingBuffer, NULL);
+//        vkFreeMemory(ctx.device.handle, stagingBufferMemory, NULL);
+//    }
+//    arena_reset(&scratchArena);
 
     // Init window
 
     // show the window, should activate the WM
     XMapWindow(display, window);
-    XSelectInput(display, window, ExposureMask | StructureNotifyMask);
+    XSelectInput(display, window, ExposureMask | StructureNotifyMask | KeyPressMask | KeyReleaseMask);
 
     // set up WM message atoms
     WM_DELETE_WINDOW = XInternAtom(display, "WM_DELETE_WINDOW", False);
@@ -708,7 +798,7 @@ int main(int argc, char** argv) {
     VkFence* inFlightFences = alloc_array(&appArena, VkFence, framesInFlight);
     {
         VkSemaphoreCreateInfo semInfo = {
-            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
         };
         VkFenceCreateInfo fenceInfo = {
             .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
@@ -757,12 +847,26 @@ int main(int argc, char** argv) {
     u64 start_time = get_time_ns();
     u64 curr_time = start_time;
 
+    game_state_t game_state;
+    game_state.main_camera = camera_looking_at_from((vec3){1,0,1}, (vec3){-2,2,-2});
+    game_state.camera_acceleration = vec3_zero;
+    game_state.camera_speed = vec3_zero;
+    game_state.current_subdiv = 1;
+    float delta_time = 0;
+
+update_start:
     while(running) {
-        curr_time = get_time_ns(); // TODO: fix time loop
+        u64 new_time = get_time_ns();
+        float delta_time = ((float)(new_time - curr_time)/ 1000000000ull);
+        curr_time = new_time; 
+        float time = ((float)(curr_time - start_time)/ 1000000000ull);
+        
         // wait for next sync objects
         VkFence fence = inFlightFences[frame];
         VkSemaphore imageAvailableSemaphore = imageAvailableSemaphores[frame];
         VkCommandBuffer cmdBuf = cmdBufs[frame];
+        // wait for submission frame i - framesInFlight
+        // means that semaphores and commandbuffers above are no longer in use by CPU
         vkWaitForFences(ctx.device.handle, 1, &fence, VK_TRUE, UINT64_MAX);
 
         // bookkeeping
@@ -787,6 +891,7 @@ int main(int argc, char** argv) {
                             Atom msg = e.xclient.data.l[0];
                             if (msg == WM_DELETE_WINDOW) {
                                 running = 0;
+                                goto update_start;
                             }
                             // reply to WM ping if needed
                             else if (msg == NET_WM_PING) {
@@ -798,14 +903,71 @@ int main(int argc, char** argv) {
                         }
                     }
                     break;
+                // handle keyboard input
+                case KeyPress:
+                case KeyRelease:
+                    {
+                        u8 code = (u8)e.xkey.keycode;
+                        update_key_state(e.type, code);
+                    }
+                    break;
             }
-            // TODO: handle input events
+            // TODO: handle mouse input events
         }
-        if (!running) break;
 
+        // arrows control subdivision for now
+        if (key_pressed(X11_KEY_CODE_UP)) {
+            game_state.current_subdiv = (game_state.current_subdiv + 1) % n_index_buffers;
+        }
+        if (key_pressed(X11_KEY_CODE_DOWN)) {
+            game_state.current_subdiv = ((game_state.current_subdiv - 1) + n_index_buffers) % n_index_buffers;
+        }
+        // wasd to move camera
+        if (key_held_or_pressed(X11_KEY_CODE_W)) {
+            game_state.camera_acceleration.z = 1.0f;
+        } else if (key_released(X11_KEY_CODE_W)) {
+            game_state.camera_acceleration.z = 0.0f;
+        }
+        if (key_held_or_pressed(X11_KEY_CODE_A)) {
+            game_state.camera_acceleration.x =-1.0f;
+        } else if (key_released(X11_KEY_CODE_A)) {
+            game_state.camera_acceleration.x = 0.0f;
+        }
+        if (key_held_or_pressed(X11_KEY_CODE_S)) {
+            game_state.camera_acceleration.z =-1.0f;
+        } else if (key_released(X11_KEY_CODE_S)) {
+            game_state.camera_acceleration.z = 0.0f;
+        }
+        if (key_held_or_pressed(X11_KEY_CODE_D)) {
+            game_state.camera_acceleration.x = 1.0f;
+        } else if (key_released(X11_KEY_CODE_D)) {
+            game_state.camera_acceleration.x = 0.0f;
+        }
 
-        res = vkAcquireNextImageKHR(ctx.device.handle, ctx.device.swapchain->handle, UINT64_MAX, imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
-        if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR || recreateSwapchain) {
+        // movement update
+        {
+            //printf("delta_time: %f\n", delta_time);
+            vec3* acc = &game_state.camera_acceleration;
+            vec3* speed = &game_state.camera_speed;
+            const float max_speed = 3.0f;
+            vec3 target_velocity = {
+                game_state.camera_acceleration.x * max_speed,
+                0.0f,
+                game_state.camera_acceleration.z * max_speed
+            };
+            //vec3_print(target_velocity, printf);
+
+            // exponential smoothing toward target
+            float responsiveness = 10.0f;
+            *speed = vec3_lerp(*speed, target_velocity, 1.0f - expf(-responsiveness * delta_time));
+            transform_move_local(&game_state.main_camera.transform, vec3_scale(*speed, delta_time));
+        }
+
+        end_of_frame_key_update();
+
+        // render start
+        // early skip render
+        if (recreateSwapchain || VK_ERROR_OUT_OF_DATE_KHR == vkAcquireNextImageKHR(ctx.device.handle, ctx.device.swapchain->handle, UINT64_MAX, imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex)) {
             vkDeviceWaitIdle(ctx.device.handle);
             // update capabilities (extents)
             res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(ctx.physicalDevice.selected->handle, ctx.surface, &ctx.physicalDevice.selected->surfaceCapabilities);
@@ -823,7 +985,7 @@ int main(int argc, char** argv) {
             recreateSwapchain = false;
 
             continue;
-        } 
+        } else assert(res == VK_SUCCESS || res == VK_SUBOPTIMAL_KHR);
 
         vkResetFences(ctx.device.handle, 1, &fence);
 
@@ -863,50 +1025,52 @@ int main(int argc, char** argv) {
         };
 
         vkCmdSetScissor(cmdBuf, 0, 1, &scissor);
-        VkBuffer vertexBuffers = {vertexBuffer};
+        VkBuffer vertexBuffers = {patch_buffer};
         VkDeviceSize offsets[] = {0};
         vkCmdBindVertexBuffers(cmdBuf, 0, 1, &vertexBuffers, offsets);
-        vkCmdBindIndexBuffer(cmdBuf, indexBuffer, 0, VK_INDEX_TYPE_UINT16);
+        u64 index_offset = n_vertices * sizeof(Vertex_t);
+        for (u16 i = 0; i < game_state.current_subdiv; i++) {
+            index_offset += n_indices[i] * sizeof(u16);
+        }
+
+        vkCmdBindIndexBuffer(cmdBuf, patch_buffer, index_offset, VK_INDEX_TYPE_UINT16);
         // update uniforms and bind them
         {
             UniformBufferObject* uniform = (UniformBufferObject*)uniformBuffersCPUMapped[frame];
+            uniform->time = time;
 
+            // recompute projection based on screen size
             float aspect = (float)ctx.physicalDevice.selected->surfaceCapabilities.currentExtent.width / 
                 ctx.physicalDevice.selected->surfaceCapabilities.currentExtent.height;
             float fov_rads = PI/4;
+            mat4_perspective(&game_state.main_camera.proj, fov_rads, aspect, 0.1f, 100.0f);
 
-            float rot_speed = 1.0f;
-            //float rotation = 2 * PI; // for now
-            float rotation = 2 * PI * ((float)(curr_time - start_time)/ 1000000000ull);
+            // model rotation for fun :)
+            float rot_speed = 0.0f;
+            float rotation = 2 * PI * time;
             rotation *= rot_speed;
+            mat4 model = mat4_rotation(rotation, (vec3){0.0f, 1.0f, 0.0f});
 
-            mat4 proj, camera, view, model;
-            // write uniform data
-            mat4_perspective(&proj, fov_rads, aspect, 0.1f, 100.0f);
-            mat4_look_at(&camera, (vec3){2,2,2}, (vec3){0,0,0}, (vec3){0,1,0});
-            mat4_inverse_rigid(&view, &camera);
-            mat4_rotation(&model, rotation, (vec3){0.0f, 0.0f, 1.0f});
-            //mat4 model = mat4_identity;
-
-            uniform->proj = proj;
-            uniform->view = view;
+            // write ubo data
             uniform->model = model;
-
+            // camera
+            uniform->proj = game_state.main_camera.proj;
+            uniform->view = transform_to_view_matrix(&game_state.main_camera.transform);
             // for debug
-            for (int i = 0; i < LEN(vertices); i++) {
-                Vertex_t v = vertices[i];
-                vec4 pos = {v.pos.x, v.pos.y, 0.0f, 1.0f};
-                vec4 mod = mat4_apply(&model, pos);
-                vec4 vi = mat4_apply(&view, mod);
-                vec4 clip = mat4_apply(&proj, vi);
-                vec3 ndc = {clip.x / clip.w, clip.y / clip.w, clip.z / clip.w};
+            //for (int i = 0; i < n_vertices; i++) {
+            //    Vertex_t v = ((Vertex_t*)ctx.stagingBuffer_cpu_mem)[i];
+            //    vec4 pos = {v.pos.x, 0.0f, v.pos.z, 1.0f};
+            //    vec4 mod = mat4_apply(&model, pos);
+            //    vec4 vi = mat4_apply(&view, mod);
+            //    vec4 clip = mat4_apply(&proj, vi);
+            //    vec3 ndc = {clip.x / clip.w, clip.y / clip.w, clip.z / clip.w};
 
-                //printf("clip: %f %f %f %f\n", clip.x, clip.y, clip.z, clip.w);
-                //printf("ndc: %f %f %f\n", ndc.x, ndc.y, ndc.z);
-            }
+            //    //printf("clip: %f %f %f %f\n", clip.x, clip.y, clip.z, clip.w);
+            //    //printf("ndc: %f %f %f\n", ndc.x, ndc.y, ndc.z);
+            //}
         }
         vkCmdBindDescriptorSets(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, ctx.pipelineLayout, 0, 1, &descriptorSets[frame], 0,  NULL);
-        vkCmdDrawIndexed(cmdBuf, LEN(indices), 1, 0, 0, 0);
+        vkCmdDrawIndexed(cmdBuf, n_indices[game_state.current_subdiv], 1, 0, 0, 0);
         vkCmdEndRenderPass(cmdBuf);
         res = vkEndCommandBuffer(cmdBuf);
         assert(res == VK_SUCCESS);

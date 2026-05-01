@@ -13,6 +13,7 @@ const char* enabledLayerNames[] = {
 
 typedef struct PhysicalDevice {
     VkPhysicalDevice handle;
+    VkPhysicalDeviceProperties props;
     u32 presentIndex;
 
     struct {
@@ -76,6 +77,10 @@ typedef struct VulkanCtx {
     VkRenderPass renderPass;
     VkPipeline pipeline;
     VkPipelineLayout pipelineLayout;
+    // staging
+    u8* stagingBuffer_cpu_mem;
+    VkBuffer stagingBuffer;
+    VkDeviceMemory stagingBufferMemory;
 } VulkanCtx;
 
 //typedef struct Vertex_t {
@@ -85,14 +90,14 @@ typedef struct VulkanCtx {
 //} Vertex_t;
 // placeholder for testing
 typedef struct Vertex_t {
-    vec2 pos;
-    vec3 color;
+    vec3 pos;
 } Vertex_t;
 
 typedef struct UniformBufferObject {
     alignas(16) mat4 proj;
     alignas(16) mat4 view; // camera
     alignas(16) mat4 model;
+    alignas(4) float time;
 } UniformBufferObject;
 
 
@@ -137,7 +142,9 @@ void vulkan_create_logical_device(VulkanCtx* ctx) {
         qCount++;
     }
 
-    VkPhysicalDeviceFeatures enabledFeatures = {0};
+    VkPhysicalDeviceFeatures enabledFeatures;
+    vkGetPhysicalDeviceFeatures(physDevice->handle, &enabledFeatures);
+
     VkDeviceCreateInfo info = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         .queueCreateInfoCount = qCount,
@@ -340,6 +347,19 @@ void create_buffer(
     assert(res == VK_SUCCESS);
 
     vkBindBufferMemory(ctx->device.handle, *buffer, *memory, 0);
+}
+
+// init staging buffers, say 16 Mb for now
+void init_staging_buffers(VulkanCtx* ctx) {
+    const u64 size = MB(16);
+    create_buffer(ctx, 
+            size,
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_SHARING_MODE_EXCLUSIVE,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            &ctx->stagingBuffer,
+            &ctx->stagingBufferMemory);
+    vkMapMemory(ctx->device.handle, ctx->stagingBufferMemory, 0, size, 0, (void**)&ctx->stagingBuffer_cpu_mem);
 }
 
 VkShaderModule create_shader_module(VkDevice device, const u32* code, size_t codeSize, VkResult* res) {

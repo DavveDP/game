@@ -4,17 +4,40 @@ layout(set = 0, binding = 0) uniform UniformBufferObject {
     mat4 proj;
     mat4 view;
     mat4 model;
+    float time;
 } ubo;
 
-//for some reason vertex data binding looks different
+// Simple Hash
+// Source - https://stackoverflow.com/a/70620975
+// Posted by dividebyzero
+// Retrieved 2026-04-27, License - CC BY-SA 4.0
+//bias: 0.17353355999581582 ( very probably the best of its kind )
+uint lowbias32(uint x)
+{
+    x ^= x >> 16;
+    x *= 0x7feb352dU;
+    x ^= x >> 15;
+    x *= 0x846ca68bU;
+    x ^= x >> 16;
+    return x;
+}
 
-layout(location = 0) in vec2 inPosition;
-layout(location = 1) in vec3 inColor;
+layout(location = 0) in vec3 inPosition;
+//layout(location = 1) in vec3 inColor;
 
 layout(location = 0) out vec3 fragColor;
 
 void main() {
-    //gl_Position = ubo.model * vec4(inPosition, 0.0, 1.0);
-    gl_Position = ubo.proj * ubo.view * ubo.model * vec4(inPosition, 0.0, 1.0);
-    fragColor = inColor;
+    // random displacement
+    //float rand = sin(gl_VertexIndex);
+    //float rand = float(lowbias32(gl_VertexIndex)) / 4294967295.0;
+    //float offset = (rand + 0.5) * 0.2; // range ~[-0.005, 0.005]
+    float offset = 0.02 * sin(ubo.time + gl_VertexIndex);
+
+    // projection
+    gl_Position = ubo.proj * ubo.view * ubo.model * vec4(inPosition + vec3(0, offset, 0), 1.0);
+
+    //fragColor = vec3(inPosition.xz, .0);
+    fragColor = vec3(0.2, 1.0, 0.2);
+
 }

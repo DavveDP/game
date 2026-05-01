@@ -1,6 +1,6 @@
 #!/bin/bash
 
-FLAGS="-g -std=c23 -Wall -Werror -Wno-unused-variable -Wno-unused-but-set-variable"
+FLAGS="-g -std=c23 -Wall -Werror -Wno-unused-variable -Wno-unused-function -Wno-unused-but-set-variable -Wno-missing-braces"
 INCLUDE="-I$VULKAN_SDK/include -I."
 LIB="-L$VULKAN_SDK/lib -lvulkan -lX11 -lm"
 SRC="linux_main.c"

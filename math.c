@@ -34,15 +34,19 @@ typedef struct mat4 {
     };
 } mat4;
 
-const mat4 mat4_identity = { .m11 = 1.0f, .m22 = 1.0f, .m33 = 1, .m44 = 1 };
+typedef struct {
+    float w, i, j, k;
+} quat;
 
-void mat4_print(mat4* m, int(*fp)(const char*, ...)) {
-    for (int i = 0; i < 4; i++) {
-        for (int j = 0; j < 4; j++) {
-            fp("%f ", m->raw[j * 4 + i]);
-        }
-        fp("\n");
-    }
+// Vector Ops
+
+vec3 vec3_zero    = {0, 0, 0};
+vec3 vec3_up      = {0, 1, 0};
+vec3 vec3_forward = {0, 0, 1};
+vec3 vec3_right   = {1, 0, 0};
+
+void vec3_print(vec3 v, int(*fp)(const char*, ...)) {
+    fp("[%f, %f, %f]\n", v.x, v.y, v.z);
 }
 
 vec3 vec3_add(vec3 a, vec3 b) {
@@ -53,8 +57,12 @@ vec3 vec3_sub(vec3 a, vec3 b) {
     return (vec3){a.x - b.x, a.y - b.y, a.z - b.z};
 }
 
-vec3 vec3_mul(vec3 a, float t) {
+vec3 vec3_scale(vec3 a, float t) {
     return (vec3){a.x * t, a.y * t, a.z * t};
+}
+
+vec3 vec3_neg(vec3 a) {
+    return (vec3){-a.x, -a.y, -a.z};
 }
 
 float vec3_sq_magnitude(vec3 a) {
@@ -68,10 +76,10 @@ float vec3_magnitude(vec3 a) {
 vec3 vec3_normalized(vec3 a) {
     float len = vec3_magnitude(a);
     assert(len != 0); // replace with if when needed
-    return vec3_mul(a, 1.0f/len);
+    return vec3_scale(a, 1.0f/len);
 }
 
-vec3 vec_cross(vec3 a, vec3 b) {
+vec3 vec3_cross(vec3 a, vec3 b) {
     return (vec3){
         a.y * b.z - a.z * b.y, 
         a.z * b.x - a.x * b.z,
@@ -79,9 +87,31 @@ vec3 vec_cross(vec3 a, vec3 b) {
     };
 }
 
-vec3 vec3_neg(vec3 a) {
-    return (vec3){-a.x, -a.y, -a.z};
+bool vec3_eq(vec3 a, vec3 b) {
+    return a.x == b.x && a.y == b.y && a.z == b.z;
 }
+
+vec3 vec3_lerp(vec3 a, vec3 b, float t) {
+    assert(0 <= t && t <= 1.0f);
+    if (vec3_eq(a,b)) return a;
+    vec3 r = vec3_normalized(vec3_sub(b, a));
+    return vec3_add(a, vec3_scale(r, t));
+}
+
+
+// Matrix Ops
+
+const mat4 mat4_identity = { .m11 = 1.0f, .m22 = 1.0f, .m33 = 1, .m44 = 1 };
+
+void mat4_print(mat4* m, int(*fp)(const char*, ...)) {
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 4; j++) {
+            fp("%f ", m->raw[j * 4 + i]);
+        }
+        fp("\n");
+    }
+}
+
 
 // Multiply a mat4 by a column vector
 vec4 mat4_apply(const mat4* m, vec4 v) {
@@ -139,17 +169,17 @@ void mat4_inverse_rigid(mat4* out, const mat4* m)
 //    return r;
 //}
 
-// Credit to Andrew Kay at (public domain at time of writing)
-// https://andrewkay.name/blog/post/efficiently-approximating-tan-x/
-// for a good tan approximation. Keep in mind to pass values [0, pi/2]
-float TA3 (float x)
-{
-  static const float pisqby4 = 2.4674011002723397f;
-  static const float adjpisqby4 = 2.471688400562703f;
-  static const float adj1minus8bypisq = 0.189759681063053f;
-  float xsq = x * x;
-  return x * (adjpisqby4 - adj1minus8bypisq * xsq) / (pisqby4 - xsq);
-}
+//// Credit to Andrew Kay at (public domain at time of writing)
+//// https://andrewkay.name/blog/post/efficiently-approximating-tan-x/
+//// for a good tan approximation. Keep in mind to pass values [0, pi/2]
+//float TA3 (float x)
+//{
+//  static const float pisqby4 = 2.4674011002723397f;
+//  static const float adjpisqby4 = 2.471688400562703f;
+//  static const float adj1minus8bypisq = 0.189759681063053f;
+//  float xsq = x * x;
+//  return x * (adjpisqby4 - adj1minus8bypisq * xsq) / (pisqby4 - xsq);
+//}
 
 // TODO: make more generic to handle asymmetric frustums, eg shadow maps
 // assumes m is zero initialized
@@ -173,8 +203,8 @@ float vec3_dot(vec3 a, vec3 b) { return a.x*b.x + a.y*b.y + a.z*b.z; }
 
 void mat4_look_at(mat4* m, vec3 eye, vec3 center, vec3 up) {
     vec3 f = vec3_normalized(vec3_sub(center, eye));   // forward
-    vec3 r = vec3_normalized(vec_cross(f, up));      // right
-    vec3 u = vec_cross(r,f);                       // orthonormal up
+    vec3 r = vec3_normalized(vec3_cross(f, up));      // right
+    vec3 u = vec3_cross(r,f);                       // orthonormal up
 
     // zero out matrix
     for (int i = 0; i < 16; i++) m->raw[i] = 0.0f;
@@ -191,49 +221,78 @@ void mat4_look_at(mat4* m, vec3 eye, vec3 center, vec3 up) {
     m->m44 = 1.0f;
 }
 
-//void mat4_look_at(mat4* m, vec3 eye, vec3 center, vec3 up) {
-//    vec3 f = vec_normalized(vec_sub(center, eye));      // forward
-//    vec3 s = vec_normalized(vec_cross(f, up));         // right
-//    vec3 u = vec_cross(s, f);                          // corrected up
-//
-//    // Zero all entries first
-//    for (int i = 0; i < 16; i++) m->raw[i] = 0.0f;
-//
-//    // Column-major
-//    m->m11 = s.x; m->m12 = s.y; m->m13 = s.z; m->m14 = 0.0f;
-//    m->m21 = u.x; m->m22 = u.y; m->m23 = u.z; m->m24 = 0.0f;
-//    m->m31 = -f.x; m->m32 = -f.y; m->m33 = -f.z; m->m34 = 0.0f;
-//    m->m41 = -dot_vec3(s, eye);
-//    m->m42 = -dot_vec3(u, eye);
-//    m->m43 = dot_vec3(f, eye);
-//    m->m44 = 1.0f;
-//}
-
-void mat4_rotation(mat4* m, float angle, vec3 axis) {
+mat4 mat4_rotation(float angle, vec3 axis) {
     vec3 u = vec3_normalized(axis);
 
     float c = cosf(angle);
     float s = sinf(angle);
     float t = 1.0f - c;
+    mat4 m;
 
     // Column-major
-    m->m11 = t*u.x*u.x + c;
-    m->m12 = t*u.x*u.y + s*u.z;
-    m->m13 = t*u.x*u.z - s*u.y;
-    m->m14 = 0.0f;
+    m.m11 = t*u.x*u.x + c;
+    m.m12 = t*u.x*u.y + s*u.z;
+    m.m13 = t*u.x*u.z - s*u.y;
+    m.m14 = 0.0f;
 
-    m->m21 = t*u.x*u.y - s*u.z;
-    m->m22 = t*u.y*u.y + c;
-    m->m23 = t*u.y*u.z + s*u.x;
-    m->m24 = 0.0f;
+    m.m21 = t*u.x*u.y - s*u.z;
+    m.m22 = t*u.y*u.y + c;
+    m.m23 = t*u.y*u.z + s*u.x;
+    m.m24 = 0.0f;
 
-    m->m31 = t*u.x*u.z + s*u.y;
-    m->m32 = t*u.y*u.z - s*u.x;
-    m->m33 = t*u.z*u.z + c;
-    m->m34 = 0.0f;
+    m.m31 = t*u.x*u.z + s*u.y;
+    m.m32 = t*u.y*u.z - s*u.x;
+    m.m33 = t*u.z*u.z + c;
+    m.m34 = 0.0f;
 
-    m->m41 = 0.0f;
-    m->m42 = 0.0f;
-    m->m43 = 0.0f;
-    m->m44 = 1.0f;
+    m.m41 = 0.0f;
+    m.m42 = 0.0f;
+    m.m43 = 0.0f;
+    m.m44 = 1.0f;
+
+    return m;
+}
+
+// Quaternion Ops
+
+void quat_print(quat q, int(*fp)(const char*, ...)) {
+    fp("[%f, %f, %f, %f]\n", q.w, q.i, q.j, q.k);
+}
+
+mat4 quat_to_mat4(quat q) {
+    float ii = q.i * q.i, jj = q.j * q.j, kk = q.k * q.k;
+    float ij = q.i * q.j, ik = q.i * q.k, jk = q.j * q.k;
+    float wi = q.w * q.i, wj = q.w * q.j, wk = q.w * q.k;
+    return (mat4){
+        1 - 2*(jj + kk),  2*(ij + wk),      2*(ik - wj),      0,
+        2*(ij - wk),      1 - 2*(ii + kk),  2*(jk + wi),      0,
+        2*(ik + wj),      2*(jk - wi),      1 - 2*(ii + jj),  0,
+        0,                0,                0,                  1
+    };
+}
+
+quat quat_mul(quat a, quat b) {
+    return (quat){
+        a.w * b.w - a.i * b.i - a.j * b.j - a.k * b.k,
+        a.w * b.i + a.i * b.w + a.j * b.k - a.k * b.j,
+        a.w * b.j + a.j * b.w + a.k * b.i - a.i * b.k,
+        a.w * b.k + a.k * b.w + a.i * b.j - a.j * b.i
+    };
+}
+
+quat quat_conjugate(quat a) {
+    return (quat) { a.w, -a.i, -a.j, -a.k };
+}
+
+quat quat_rotate_around(vec3 axis, float ang) {
+    float theta = -ang/2;
+    float sin_theta = sinf(theta);
+    return (quat) {cosf(theta), axis.x * sin_theta, axis.y * sin_theta, axis.z * sin_theta};
+}
+
+vec3 quat_rotate_vec3(quat q, vec3 v) {
+    quat q_inv = quat_conjugate(q);
+    quat q_v = (quat) { 0.0f, v.x, v.y, v.z };
+    quat rotated = quat_mul(quat_mul(q, q_v), q_inv);
+    return (vec3) {rotated.i, rotated.j, rotated.k};
 }
