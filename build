@@ -2,7 +2,7 @@
 
 FLAGS="-g -std=c23 -Wall -Werror -Wno-unused-variable -Wno-unused-function -Wno-unused-but-set-variable -Wno-missing-braces"
 INCLUDE="-I$VULKAN_SDK/include -I."
-LIB="-L$VULKAN_SDK/lib -lvulkan -lX11 -lm"
+LIB="-L$VULKAN_SDK/lib -lvulkan -lm -lX11 -lXi"
 SRC="linux_main.c"
 mkdir -p bin
 FILENAME="bin/a"

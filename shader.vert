@@ -7,6 +7,11 @@ layout(set = 0, binding = 0) uniform UniformBufferObject {
     float time;
 } ubo;
 
+float rand(float x)
+{
+    return fract(sin(x * 2.9898)) * 43758.5453;
+}
+
 // Simple Hash
 // Source - https://stackoverflow.com/a/70620975
 // Posted by dividebyzero
@@ -30,9 +35,9 @@ layout(location = 0) out vec3 fragColor;
 void main() {
     // random displacement
     //float rand = sin(gl_VertexIndex);
-    //float rand = float(lowbias32(gl_VertexIndex)) / 4294967295.0;
-    //float offset = (rand + 0.5) * 0.2; // range ~[-0.005, 0.005]
-    float offset = 0.02 * sin(ubo.time + gl_VertexIndex);
+    float rand = rand(gl_VertexIndex + ubo.time) / 100000.0;
+    float offset = (rand + 0.5) * 0.2; // range ~[-0.005, 0.005]
+    //float offset = 0.02 * sin(ubo.time + gl_VertexIndex);
 
     // projection
     gl_Position = ubo.proj * ubo.view * ubo.model * vec4(inPosition + vec3(0, offset, 0), 1.0);

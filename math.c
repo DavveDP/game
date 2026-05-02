@@ -38,11 +38,11 @@ typedef struct {
     float w, i, j, k;
 } quat;
 
-// Vector Ops
+// vector ops
 
 vec3 vec3_zero    = {0, 0, 0};
 vec3 vec3_up      = {0, 1, 0};
-vec3 vec3_forward = {0, 0, 1};
+vec3 vec3_forward = {0, 0,-1};
 vec3 vec3_right   = {1, 0, 0};
 
 void vec3_print(vec3 v, int(*fp)(const char*, ...)) {
@@ -70,12 +70,18 @@ float vec3_sq_magnitude(vec3 a) {
 }
 
 float vec3_magnitude(vec3 a) {
-    return sqrtf(a.x * a.x + a.y * a.y + a.z * a.z);
+    float M = fmaxf(fmaxf(fabs(a.x), fabs(a.y)), fabs(a.z));
+    if (M == 0.0f) return 0.0f;
+    vec3 u = vec3_scale(a, 1/M);
+    return M * sqrtf(u.x * u.x + u.y * u.y + u.z * u.z);
+}
+
+bool vec3_is_zero(vec3 a) {
+    return a.x == 0.f && a.y == 0.f && a.z == 0.f;
 }
 
 vec3 vec3_normalized(vec3 a) {
     float len = vec3_magnitude(a);
-    assert(len != 0); // replace with if when needed
     return vec3_scale(a, 1.0f/len);
 }
 
@@ -187,15 +193,15 @@ void mat4_perspective(mat4* m, float fov_rads, float aspect, float znear, float 
     float t = znear * tanf(fov_rads / 2.0f); // top is down
     float r = t * aspect; 
 
-    // Zero all entries first
+    // zero all entries first
     for (int i = 0; i < 16; i++) m->raw[i] = 0.0f;
 
-    // Column-major layout
+    // column-major layout
     m->m11 = znear / r;    // 2n/(r-l) = 2n/2r since l = -r
-    m->m22 = -znear / t;        // same as above
-    m->m33 = zfar / (zfar - znear);  // map Z to [0,1]
-    m->m43 = 1.0f;       // perspective divide
-    m->m34 = -(zfar * znear) / (zfar - znear); // translation
+    m->m22 = -znear / t;        // same as above (negated)
+    m->m33 = zfar / (znear - zfar);  // map z to [0,1] (negated)
+    m->m43 = -1.0f;       // perspective divide (negated)
+    m->m34 = (zfar * znear) / (znear - zfar); // translation
     // m44 = 0.0f already
 }
 
@@ -209,12 +215,12 @@ void mat4_look_at(mat4* m, vec3 eye, vec3 center, vec3 up) {
     // zero out matrix
     for (int i = 0; i < 16; i++) m->raw[i] = 0.0f;
 
-    // Column 1 (right)
+    // column 1 (right)
     m->c1 = r;
     m->c2 = u;
     m->c3 = f;
     m->c4 = eye;
-    // Column 4 (translation)
+    // column 4 (translation)
     //m->m14 = vec3_dot(s, eye);
     //m->m24 = vec3_dot(u, eye);
     //m->m34 = vec3_dot(f, eye);
@@ -259,6 +265,7 @@ void quat_print(quat q, int(*fp)(const char*, ...)) {
     fp("[%f, %f, %f, %f]\n", q.w, q.i, q.j, q.k);
 }
 
+
 mat4 quat_to_mat4(quat q) {
     float ii = q.i * q.i, jj = q.j * q.j, kk = q.k * q.k;
     float ij = q.i * q.j, ik = q.i * q.k, jk = q.j * q.k;
@@ -285,7 +292,7 @@ quat quat_conjugate(quat a) {
 }
 
 quat quat_rotate_around(vec3 axis, float ang) {
-    float theta = -ang/2;
+    float theta = ang/2; 
     float sin_theta = sinf(theta);
     return (quat) {cosf(theta), axis.x * sin_theta, axis.y * sin_theta, axis.z * sin_theta};
 }

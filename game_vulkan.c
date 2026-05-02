@@ -100,6 +100,12 @@ typedef struct UniformBufferObject {
     alignas(4) float time;
 } UniformBufferObject;
 
+u32 window_height(VulkanCtx* ctx) {
+    return ctx->physicalDevice.selected->surfaceCapabilities.currentExtent.height;
+}
+u32 window_width(VulkanCtx* ctx) {
+    return ctx->physicalDevice.selected->surfaceCapabilities.currentExtent.width;
+}
 
 VkResult vulkan_create_instance(VkInstance* instance) {
     VkApplicationInfo appInfo = {

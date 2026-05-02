@@ -2,8 +2,13 @@
 
 ## Dependencies
 
-- Vulkan SDK
-- X11 lib, with xkb extensions
+- Vulkan SDK (install on your own, project requires env variable 
+$VULKAN_SDK to be defined)
+- X11 lib, with XI (raw input) extensions
+
+```bash
+apt install libx11-dev libxi-dev
+```
 
 ## Roadmap
 

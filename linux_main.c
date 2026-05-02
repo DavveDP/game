@@ -7,12 +7,11 @@
 #include <string.h>
 #include <defines.h>
 
-//#define CLAMP(X, Min, Max) \
-//    (X) > (Max) ? (Max) : ((X) < Min ? Min : (X))
-
-#define MAX_FRAMES_IN_FLIGHT 3
-
-#include <models.c> // just a bunch of embed directives
+// My platform agnostic files
+#include <math.c> // links with math
+#include <mesh.c> // plane subdivision
+#include <game.h>
+#include <game.c>
 
 // Begin Platfrom specific code
 
@@ -27,12 +26,41 @@
 #include <time.h>
 #include <X11/Xlib.h>
 #include <X11/XKBlib.h>
+#include <X11/extensions/XInput2.h>
 #define VK_USE_PLATFORM_XLIB_KHR
-#include <math.c> // uses math.h and links with math
 #include <vulkan/vulkan.h>
 #include <game_vulkan.c> 
-#include <mesh.c>
-#include <game.c>
+
+#define MAX_FRAMES_IN_FLIGHT 3
+
+// Mouse input
+
+Cursor invisible_cursor;
+
+// raw input data
+typedef struct {
+    int majorOpcode, eventBase, errorBase;
+} XI_t;
+
+XI_t xi;
+
+typedef struct {
+    float prev_x, prev_y, x, y;
+} cursor_position_t;
+
+cursor_position_t cursor_position;
+
+void mouse_moved_this_frame(float* dx, float* dy) {
+    *dx = cursor_position.x - cursor_position.prev_x;
+    *dy = cursor_position.y - cursor_position.prev_y;
+}
+
+static void end_of_frame_mouse_update(void) {
+    cursor_position.prev_x = cursor_position.x;
+    cursor_position.prev_y = cursor_position.y;
+}
+
+// Keyboard input
 
 enum X11_KEY_CODES_t {
     X11_KEY_CODE_W = 25,
@@ -42,11 +70,23 @@ enum X11_KEY_CODES_t {
     X11_KEY_CODE_UP = 111,
     X11_KEY_CODE_LEFT = 113,
     X11_KEY_CODE_RIGHT = 114,
-    X11_KEY_CODE_DOWN = 116
+    X11_KEY_CODE_DOWN = 116,
+    X11_KEY_CODE_LSHIFT = 50,
+    X11_KEY_CODE_SPACE = 65,
     //...
 };
 
-// Key input
+u8 btn_to_key_code_table[256];
+static void init_btn_key_code_table(void) {
+    btn_to_key_code_table[BTN_SUBDIV_INC] = X11_KEY_CODE_UP;
+    btn_to_key_code_table[BTN_SUBDIV_DEC] = X11_KEY_CODE_DOWN;
+    btn_to_key_code_table[BTN_MOVE_FORWARD] = X11_KEY_CODE_W;
+    btn_to_key_code_table[BTN_MOVE_LEFT] = X11_KEY_CODE_A;
+    btn_to_key_code_table[BTN_MOVE_BACKWARD] = X11_KEY_CODE_S;
+    btn_to_key_code_table[BTN_MOVE_RIGHT] = X11_KEY_CODE_D;
+    btn_to_key_code_table[BTN_MOVE_DOWN] = X11_KEY_CODE_LSHIFT;
+    btn_to_key_code_table[BTN_MOVE_UP] = X11_KEY_CODE_SPACE;
+}
 
 u8 key_states[256];
 
@@ -56,23 +96,28 @@ enum KEY_STATE {
     KEY_STATE_HELD = 3
 };
 
-static bool key_released(u8 key) {
+bool btn_released(Button btn) {
+    u8 key = btn_to_key_code_table[btn];
     return key_states[key] == KEY_STATE_RELEASED_THIS_UPDATE;
 }
 
-static bool key_pressed(u8 key) {
+bool btn_pressed(Button btn) {
+    u8 key = btn_to_key_code_table[btn];
     return key_states[key] == KEY_STATE_PRESSED_THIS_UPDATE;
 }
 
-static bool key_held(u8 key) {
+bool btn_held(Button btn) {
+    u8 key = btn_to_key_code_table[btn];
     return key_states[key] == KEY_STATE_HELD;
 }
 
-static bool key_held_or_pressed(u8 key) {
+bool btn_held_or_pressed(Button btn) {
+    u8 key = btn_to_key_code_table[btn];
     return key_states[key] & 2; // check second bit
 }
 
 void update_key_state(int event_type, u8 key) {
+    //printf("key: %hhd\n", key);
     // set second bit
     u8* s = &key_states[key];
     switch(event_type) {
@@ -152,6 +197,7 @@ int main(int argc, char** argv) {
     // Signal handling
     signal(SIGINT, sigint_and_sigterm_handler);
     signal(SIGTERM, sigint_and_sigterm_handler);
+    init_btn_key_code_table();
 
     // Our only alloc call, (see allocators)
     void* mem = mmap(NULL, GB(1), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -175,11 +221,13 @@ int main(int argc, char** argv) {
 
     // x11_init function maybe?
     //
-    // platform specific stuff to create surface
+    // platform specific stuff to create surface and init input
     Display* display;
     Window window;
+    Window root;
     {
         display = XOpenDisplay(NULL);
+        root = RootWindow(display, DefaultScreen(display));
 
         // assert xkb support, disabling auto release events
         int supported;
@@ -188,7 +236,7 @@ int main(int argc, char** argv) {
 
         window = XCreateSimpleWindow(
                 display, 
-                RootWindow(display, DefaultScreen(display)), 
+                root,
                 0, 0, 
                 800, 600, 
                 0, 
@@ -203,10 +251,36 @@ int main(int argc, char** argv) {
         };
         VkResult res = vkCreateXlibSurfaceKHR(ctx.instance, &info, NULL, &ctx.surface);
         assert(res == VK_SUCCESS);
+
+        // create invisible cursor
+        Pixmap bm_no;
+        XColor black;
+        const char no_data[] = {0,0,0,0,0,0,0,0};
+        bm_no = XCreateBitmapFromData(display, window, no_data, 8, 8);
+        invisible_cursor = XCreatePixmapCursor(display, bm_no, bm_no, &black, &black, 0, 0);
+
+        // enable raw mouse input events
+        assert(XQueryExtension(display, "XInputExtension", 
+                &xi.majorOpcode,
+                &xi.eventBase,
+                &xi.errorBase));
+        int major = 2, minor = 0;
+
+        assert(XIQueryVersion(display, &major, &minor) == Success);
+
+        unsigned char mask[XIMaskLen(XI_RawMotion)] = {0};
+        XISetMask(mask, XI_RawMotion);
+
+        XIEventMask emask = {
+            .deviceid = XIAllMasterDevices,
+            .mask_len = sizeof(mask),
+            .mask = mask
+        };
+
+        XISelectEvents(display, root, &emask, 1);
     }
-    
-    // from here on out, just plain vulkan (sort of lol)
-    
+
+    // vulkan init
     // find phys devices, TODO: score and sort them
     {
         u32 nPhys;
@@ -276,7 +350,7 @@ int main(int argc, char** argv) {
             //// surface capabilities (only to check min image count or whatever, likely not that important)
             res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(handles[i], ctx.surface, &validDevice->surfaceCapabilities);
             if (res != VK_SUCCESS) continue;
-            
+
             // formats
             res = vkGetPhysicalDeviceSurfaceFormatsKHR(handles[i], ctx.surface, &validDevice->formats.count, NULL);
             if (res != VK_SUCCESS) continue;
@@ -291,7 +365,7 @@ int main(int argc, char** argv) {
                     validDevice->formats.selected = format;
                 }
             }
-            
+
             // present mode
             u32 nPresentModes;
             res = vkGetPhysicalDeviceSurfacePresentModesKHR(handles[i], ctx.surface, &nPresentModes, NULL);
@@ -308,8 +382,8 @@ int main(int argc, char** argv) {
             // additional features
             VkPhysicalDeviceFeatures features;
             vkGetPhysicalDeviceFeatures(handles[i], &features);
-                if (!features.fillModeNonSolid) continue;
-            
+            if (!features.fillModeNonSolid) continue;
+
             // this is a valid device
             printf("Found device: %s\n", validDevice->props.deviceName);
             // first device is assigned to the ptr
@@ -706,62 +780,13 @@ int main(int argc, char** argv) {
     }
     arena_reset(&scratchArena);
 
-    // create vertex buffer
-//    VkBuffer vertexBuffer;
-//    VkDeviceMemory vertexBufferMemory;
-//    VkBuffer indexBuffer;
-//    VkDeviceMemory indexBufferMemory;
-//    {
-//        create_buffer(&ctx,
-//                sizeof(vertices),
-//                VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-//                VK_SHARING_MODE_EXCLUSIVE,
-//                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-//                &vertexBuffer,
-//                &vertexBufferMemory);
-//
-//        create_buffer(&ctx,
-//                sizeof(indices),
-//                VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-//                VK_SHARING_MODE_EXCLUSIVE,
-//                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-//                &indexBuffer,
-//                &indexBufferMemory);
-//
-//        // upload vertex data
-//        void* data;
-//        vkMapMemory(ctx.device.handle, stagingBufferMemory, 0, sizeof(vertices), 0, &data);
-//        memcpy(data, vertices, (size_t) sizeof(vertices));
-//        vkUnmapMemory(ctx.device.handle, stagingBufferMemory);
-//
-//        staging_buffer_upload_t uploadInfo = {
-//            .copyRegion = {0, 0, sizeof(vertices)},
-//            .src = stagingBuffer,
-//            .dst = vertexBuffer
-//        };
-//        upload_staging_buffer(&ctx, &uploadInfo, transientPool); // waits on device idle
-//
-//        // upload index data
-//        vkMapMemory(ctx.device.handle, stagingBufferMemory, 0, sizeof(indices), 0, &data);
-//        memcpy(data, indices, (size_t) sizeof(indices));
-//        vkUnmapMemory(ctx.device.handle, stagingBufferMemory);
-//
-//        uploadInfo.copyRegion = (VkBufferCopy){0, 0, sizeof(indices)};
-//        uploadInfo.src = stagingBuffer;
-//        uploadInfo.dst = indexBuffer;
-//        upload_staging_buffer(&ctx, &uploadInfo, transientPool); // waits on device idle
-//
-//        res = vkResetCommandPool(ctx.device.handle, transientPool, 0);
-//        vkDestroyBuffer(ctx.device.handle, stagingBuffer, NULL);
-//        vkFreeMemory(ctx.device.handle, stagingBufferMemory, NULL);
-//    }
-//    arena_reset(&scratchArena);
-
     // Init window
 
     // show the window, should activate the WM
     XMapWindow(display, window);
-    XSelectInput(display, window, ExposureMask | StructureNotifyMask | KeyPressMask | KeyReleaseMask);
+    XSelectInput(display, window, ExposureMask | StructureNotifyMask | 
+            KeyPressMask | KeyReleaseMask |
+            PointerMotionMask | FocusChangeMask);
 
     // set up WM message atoms
     WM_DELETE_WINDOW = XInternAtom(display, "WM_DELETE_WINDOW", False);
@@ -848,11 +873,11 @@ int main(int argc, char** argv) {
     u64 curr_time = start_time;
 
     game_state_t game_state;
-    game_state.main_camera = camera_looking_at_from((vec3){1,0,1}, (vec3){-2,2,-2});
-    game_state.camera_acceleration = vec3_zero;
+    game_state.main_camera = camera_looking_at_from((vec3){0.5f,0,0.5f}, (vec3){2,2,2});
     game_state.camera_speed = vec3_zero;
     game_state.current_subdiv = 1;
     float delta_time = 0;
+    bool window_focused = false;
 
 update_start:
     while(running) {
@@ -860,7 +885,7 @@ update_start:
         float delta_time = ((float)(new_time - curr_time)/ 1000000000ull);
         curr_time = new_time; 
         float time = ((float)(curr_time - start_time)/ 1000000000ull);
-        
+
         // wait for next sync objects
         VkFence fence = inFlightFences[frame];
         VkSemaphore imageAvailableSemaphore = imageAvailableSemaphores[frame];
@@ -903,7 +928,7 @@ update_start:
                         }
                     }
                     break;
-                // handle keyboard input
+                    // handle keyboard input
                 case KeyPress:
                 case KeyRelease:
                     {
@@ -911,63 +936,79 @@ update_start:
                         update_key_state(e.type, code);
                     }
                     break;
+                    // capture pointer on focus
+                case FocusIn:
+                    {
+                        // ignore events from popup windows, GLFW does this
+                        if (e.xfocus.mode == NotifyGrab || 
+                                e.xfocus.mode == NotifyUngrab) {
+                            break;
+                        }
+                        window_focused = true;
+                        XDefineCursor(display, window, invisible_cursor);
+                    }
+                    break;
+
+                case FocusOut:
+                    {
+                        // ignore events from popup windows, GLFW does this
+                        if (e.xfocus.mode == NotifyGrab || 
+                                e.xfocus.mode == NotifyUngrab) {
+                            break;
+                        }
+                        window_focused = false;
+                        XUndefineCursor(display, window);
+                    }
+                    // handle mouse motion
+                //case MotionNotify:
+                //    {
+                //        cursor_position.x = e.xmotion.x;
+                //        cursor_position.y = e.xmotion.y;
+                //        break;
+                //    }
+                case GenericEvent:
+                    {
+                        if (window_focused &&
+                            e.xcookie.extension == xi.majorOpcode &&
+                            XGetEventData(display, &e.xcookie) &&
+                            e.xcookie.evtype == XI_RawMotion) 
+                        {
+                            XIRawEvent* re = e.xcookie.data;
+                            if (re->valuators.mask_len) {
+                                const double* values = re->raw_values;
+                                if (XIMaskIsSet(re->valuators.mask, 0)) {
+                                    cursor_position.x += (float)*values;
+                                    values++;
+                                }
+                                if (XIMaskIsSet(re->valuators.mask, 0)) {
+                                    cursor_position.y += (float)*values;
+                                }
+                            }
+                            XFreeEventData(display, &e.xcookie);
+                        }
+                    }
+                    break;
+
             }
             // TODO: handle mouse input events
         }
 
-        // arrows control subdivision for now
-        if (key_pressed(X11_KEY_CODE_UP)) {
-            game_state.current_subdiv = (game_state.current_subdiv + 1) % n_index_buffers;
+        //printf("fps: %f\n", 1/delta_time);
+        //vec3_print(game_state.main_camera.transform.pos, printf);
+        game_update(&game_state, delta_time, n_index_buffers);
+        // warp cursor back to centre
+        if (window_focused) {
+            XWarpPointer(display, None, window, 0, 0, 0, 0, window_width(&ctx) / 2, window_height(&ctx) / 2);
         }
-        if (key_pressed(X11_KEY_CODE_DOWN)) {
-            game_state.current_subdiv = ((game_state.current_subdiv - 1) + n_index_buffers) % n_index_buffers;
-        }
-        // wasd to move camera
-        if (key_held_or_pressed(X11_KEY_CODE_W)) {
-            game_state.camera_acceleration.z = 1.0f;
-        } else if (key_released(X11_KEY_CODE_W)) {
-            game_state.camera_acceleration.z = 0.0f;
-        }
-        if (key_held_or_pressed(X11_KEY_CODE_A)) {
-            game_state.camera_acceleration.x =-1.0f;
-        } else if (key_released(X11_KEY_CODE_A)) {
-            game_state.camera_acceleration.x = 0.0f;
-        }
-        if (key_held_or_pressed(X11_KEY_CODE_S)) {
-            game_state.camera_acceleration.z =-1.0f;
-        } else if (key_released(X11_KEY_CODE_S)) {
-            game_state.camera_acceleration.z = 0.0f;
-        }
-        if (key_held_or_pressed(X11_KEY_CODE_D)) {
-            game_state.camera_acceleration.x = 1.0f;
-        } else if (key_released(X11_KEY_CODE_D)) {
-            game_state.camera_acceleration.x = 0.0f;
-        }
-
-        // movement update
-        {
-            //printf("delta_time: %f\n", delta_time);
-            vec3* acc = &game_state.camera_acceleration;
-            vec3* speed = &game_state.camera_speed;
-            const float max_speed = 3.0f;
-            vec3 target_velocity = {
-                game_state.camera_acceleration.x * max_speed,
-                0.0f,
-                game_state.camera_acceleration.z * max_speed
-            };
-            //vec3_print(target_velocity, printf);
-
-            // exponential smoothing toward target
-            float responsiveness = 10.0f;
-            *speed = vec3_lerp(*speed, target_velocity, 1.0f - expf(-responsiveness * delta_time));
-            transform_move_local(&game_state.main_camera.transform, vec3_scale(*speed, delta_time));
-        }
-
+        end_of_frame_mouse_update();
         end_of_frame_key_update();
 
         // render start
         // early skip render
-        if (recreateSwapchain || VK_ERROR_OUT_OF_DATE_KHR == vkAcquireNextImageKHR(ctx.device.handle, ctx.device.swapchain->handle, UINT64_MAX, imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex)) {
+        if (recreateSwapchain || 
+                VK_ERROR_OUT_OF_DATE_KHR == vkAcquireNextImageKHR(
+                    ctx.device.handle, ctx.device.swapchain->handle, UINT64_MAX, imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex)) 
+        {
             vkDeviceWaitIdle(ctx.device.handle);
             // update capabilities (extents)
             res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(ctx.physicalDevice.selected->handle, ctx.surface, &ctx.physicalDevice.selected->surfaceCapabilities);
@@ -1057,17 +1098,13 @@ update_start:
             uniform->proj = game_state.main_camera.proj;
             uniform->view = transform_to_view_matrix(&game_state.main_camera.transform);
             // for debug
-            //for (int i = 0; i < n_vertices; i++) {
-            //    Vertex_t v = ((Vertex_t*)ctx.stagingBuffer_cpu_mem)[i];
-            //    vec4 pos = {v.pos.x, 0.0f, v.pos.z, 1.0f};
-            //    vec4 mod = mat4_apply(&model, pos);
-            //    vec4 vi = mat4_apply(&view, mod);
-            //    vec4 clip = mat4_apply(&proj, vi);
-            //    vec3 ndc = {clip.x / clip.w, clip.y / clip.w, clip.z / clip.w};
 
-            //    //printf("clip: %f %f %f %f\n", clip.x, clip.y, clip.z, clip.w);
-            //    //printf("ndc: %f %f %f\n", ndc.x, ndc.y, ndc.z);
-            //}
+            //vec4 vi = mat4_apply(&uniform->view, (vec4){1,0,0,1});
+            //vec4 clip = mat4_apply(&uniform->proj, vi);
+            //vec3 ndc = {clip.x / clip.w, clip.y / clip.w, clip.z / clip.w};
+            //printf("vi: %f %f %f %f\n", vi.x, vi.y, vi.z, vi.w);
+            //printf("clip: %f %f %f %f\n", clip.x, clip.y, clip.z, clip.w);
+            //printf("ndc: %f %f %f\n", ndc.x, ndc.y, ndc.z);
         }
         vkCmdBindDescriptorSets(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, ctx.pipelineLayout, 0, 1, &descriptorSets[frame], 0,  NULL);
         vkCmdDrawIndexed(cmdBuf, n_indices[game_state.current_subdiv], 1, 0, 0, 0);
