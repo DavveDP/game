@@ -22,15 +22,21 @@ typedef struct arena_alloc_mark_t {
     u8* ptr;
 } arena_mark_t;
 
-void arena_init(arena_t* a, u8* origin, size_t size) {
+arena_t arena_create(u8* origin, size_t size) {
+    arena_t a;
     // this assumption makes our lives so much easier
     assert(align_up(origin, alignof(max_align_t)) == origin);
-    a->origin = a->curr = origin;
-    a->size = size;
+    a.origin = a.curr = origin;
+    a.size = size;
+    return a;
 }
 
 void arena_reset(arena_t* a) {
     a->curr = a->origin;
+}
+
+static inline void arena_align(arena_t* a, size_t alignment) {
+    a->curr = align_up(a->curr, alignment);
 }
 
 void* arena_alloc(arena_t* a, size_t size, size_t alignment) {
@@ -102,7 +108,8 @@ void block_alloc_reset(block_alloc_t* a) {
     *lastWord &= lastWordMask;
 }
 
-void block_alloc_init(block_alloc_t* a, u8* origin, size_t blockCount, size_t blockSize) {
+block_alloc_t block_alloc_create(u8* origin, size_t blockCount, size_t blockSize) {
+    block_alloc_t a;
     // these assumptions make our lives so much easier
     assert(blockCount > 0);
     assert((uintptr_t)origin % alignof(u32) == 0);
@@ -110,11 +117,12 @@ void block_alloc_init(block_alloc_t* a, u8* origin, size_t blockCount, size_t bl
 
     blockSize = align_up(blockSize, alignof(max_align_t)); 
  
-    a->origin = origin;
-    a->blockCount = blockCount;
-    a->blockSize = blockSize;
-    a->nextWordIndex = 0;
-    block_alloc_reset(a);
+    a.origin = origin;
+    a.blockCount = blockCount;
+    a.blockSize = blockSize;
+    a.nextWordIndex = 0;
+    block_alloc_reset(&a);
+    return a;
 }
 
 void* block_alloc(block_alloc_t* a) {

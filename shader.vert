@@ -1,11 +1,16 @@
 #version 450
 
-layout(set = 0, binding = 0) uniform UniformBufferObject {
+layout(set = 0, binding = 0) uniform UBO_Global {
     mat4 proj;
     mat4 view;
-    mat4 model;
     float time;
-} ubo;
+} ubo_global;
+
+layout(set = 1, binding = 0) uniform UBO_Terrain {
+    // noise params will go here
+    uint a;
+    uint b;
+} ubo_terrain;
 
 float rand(float x)
 {
@@ -35,12 +40,12 @@ layout(location = 0) out vec3 fragColor;
 void main() {
     // random displacement
     //float rand = sin(gl_VertexIndex);
-    float rand = rand(gl_VertexIndex + ubo.time) / 100000.0;
+    float rand = rand(gl_VertexIndex + ubo_global.time) / 100000.0;
     float offset = (rand + 0.5) * 0.2; // range ~[-0.005, 0.005]
-    //float offset = 0.02 * sin(ubo.time + gl_VertexIndex);
+    //float offset = 0.02 * sin(ubo_global.time + gl_VertexIndex);
 
     // projection
-    gl_Position = ubo.proj * ubo.view * ubo.model * vec4(inPosition + vec3(0, offset, 0), 1.0);
+    gl_Position = ubo_global.proj * ubo_global.view * vec4(inPosition + vec3(0, offset, 0), 1.0);
 
     //fragColor = vec3(inPosition.xz, .0);
     fragColor = vec3(0.2, 1.0, 0.2);

@@ -1,14 +1,21 @@
 // s_max -> vertices, indices[s_max + 1]
-
-void subdiv_plane(u8 s_max, void* vertices, u32 stride, u32* nvertices, u16** indices, u32* nindices) {
-    assert(s_max <= 7); // max index 16640, fits u16
-    assert(s_max < 32);
-    u32 n = (1 << s_max) + 1;
-    *nvertices = n * n;
-    for (u32 s = 0; s <= s_max; s++) {
-        u32 n_tri = 1 << (2 * s + 1);
-        nindices[s] = n_tri * 3;
+u32 remove_indices_containing(u16* indices, u32 nindices, u16 index) {
+    u32 shift = 0;
+    for (u32 i = 0; i < nindices; i++) {
+        indices[i-shift] = indices[i];
+        if (indices[i] == index) {
+            shift++;
+        }
     }
+    return shift; // removed
+}
+
+void subdiv_plane(u8 subdiv, void* vertices, u32 stride, u32* nvertices, u16* indices, u32* nindices) {
+    assert(subdiv <= 7); // max index 16640, fits u16
+    u32 n = (1 << subdiv) + 1;
+    *nvertices = n * n;
+    u32 n_triangles = (1 << (2 * subdiv + 1));
+    *nindices = n_triangles * 3;
     if (vertices == NULL || indices == NULL) {
         return;
     }
@@ -25,22 +32,18 @@ void subdiv_plane(u8 s_max, void* vertices, u32 stride, u32* nvertices, u16** in
         }
     }
     // generate indices
-    for (u32 s = 0; s <= s_max; s++) {
-        u32 i = 0;
-        u32 dx = (1 << (s_max - s));
-        u32 dy = n * dx;
-        // iterate over coarse rows and columns only
-        u32 n_coarse = (1 << s); // number of quads per row at this subdivision
-        for (u32 row = 0; row < n_coarse; row++) {
-            for (u32 col = 0; col < n_coarse; col++) {
-                u32 x = row * dy + col * dx; // top-left vertex of this quad
-                indices[s][i++] = x;
-                indices[s][i++] = x + dx;
-                indices[s][i++] = x + dx + dy;
-                indices[s][i++] = x;
-                indices[s][i++] = x + dx + dy;
-                indices[s][i++] = x + dy;
-            }
+    u32 i = 0;
+    u32 dx = 1;
+    u32 dy = n;
+    for (u32 row = 0; row < n - 1; row++) {
+        for (u32 col = 0; col < n - 1; col++) {
+            u32 x = row * dy + col * dx;
+            indices[i++] = x;
+            indices[i++] = x + dx;
+            indices[i++] = x + dx + dy;
+            indices[i++] = x;
+            indices[i++] = x + dx + dy;
+            indices[i++] = x + dy;
         }
     }
 }
