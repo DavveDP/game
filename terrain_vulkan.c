@@ -265,7 +265,7 @@ terrain_gpu_t terrain_init(arena_t* arena_permanent, arena_t* arena_scratch, Vul
     terrain.pipeline = terrain_create_pipeline(arena_permanent, arena_scratch, ctx, ubo_global_descriptor_set_layout);
     // allocate vertices
     {
-        subdiv_plane(5, NULL, 0, &terrain.n_vertices, NULL, &terrain.n_indices);
+        mesh_subdiv_plane(5, NULL, 0, &terrain.n_vertices, NULL, &terrain.n_indices);
 
         // allocate CPU temp buffers
         Vertex_t* vertices = alloc_array(arena_scratch, Vertex_t, terrain.n_vertices);
@@ -273,7 +273,7 @@ terrain_gpu_t terrain_init(arena_t* arena_permanent, arena_t* arena_scratch, Vul
         u64 total_size = sizeof(*vertices) * terrain.n_vertices + sizeof(*indices) * terrain.n_indices;
 
         // generate mesh
-        subdiv_plane(5, &vertices->pos, sizeof(*vertices), &terrain.n_vertices, indices, &terrain.n_indices);
+        mesh_subdiv_plane(5, &vertices->pos, sizeof(*vertices), &terrain.n_vertices, indices, &terrain.n_indices);
 
         // create gpu buffer (alignment is fine, since u16 will always be aligned after verts)
         create_buffer(ctx,

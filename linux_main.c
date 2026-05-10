@@ -328,6 +328,7 @@ update_start:
                         window_focused = false;
                         XUndefineCursor(display, window);
                     }
+                    break;
                     // handle mouse motion
                     //case MotionNotify:
                     //    {
@@ -349,7 +350,7 @@ update_start:
                                     cursor_position.x += (float)*values;
                                     values++;
                                 }
-                                if (XIMaskIsSet(re->valuators.mask, 0)) {
+                                if (XIMaskIsSet(re->valuators.mask, 1)) {
                                     cursor_position.y += (float)*values;
                                 }
                             }
