@@ -61,32 +61,32 @@ u32 remove_indices_containing(u16* indices, u32 nindices, u16 index) {
     return shift; // removed
 }
 
-void mesh_create_index_buffer_permutations(u8 subdiv, u16* indices, u16* counts) {
-    u32 n_triangles = (1 << (2 * subdiv + 1));
-    u32 nindices = n_triangles * 3;
-    u32 tris_to_remove_per_side = (subdiv * 2) * 2;
-    counts[0] = counts[1] = counts[2] = counts[3] = nindices - tris_to_remove_per_side * 3;
-    counts[4] = counts[5] = counts[6] = counts[7] = nindices - tris_to_remove_per_side * 2 * 3;
-    if (indices == NULL) return;
-
-    u32 n = (1 << subdiv) + 1;
-    u32 dx = 1;
-    u32 dy = n;
-
-    u32 tl = 0;
-    u32 tr = (n-1)*dx;
-    u32 bl = (n-1)*dy;
-    
-    // top
-    u16* p = indices;
-    for (int c = 0; c < 8; c++) {
-        mesh_subdiv_plane(subdiv, NULL, 0, NULL, p, nindices);
-        u32 count = 0;
-        u16 indices_to_remove[counts[c]];
-        for (u32 i = 1; i < tr; i++) ir1[count++]; // parametrize this?
-        for (u32 i = 0; i < count; i++) {
-            remove_indices_containing(p, nindices, ir1[i]);
-        }
-        p += counts[0];
-    }
-}
+//void mesh_create_index_buffer_permutations(u8 subdiv, u16* indices, u16* counts) {
+//    u32 n_triangles = (1 << (2 * subdiv + 1));
+//    u32 nindices = n_triangles * 3;
+//    u32 tris_to_remove_per_side = (subdiv * 2) * 2;
+//    counts[0] = counts[1] = counts[2] = counts[3] = nindices - tris_to_remove_per_side * 3;
+//    counts[4] = counts[5] = counts[6] = counts[7] = nindices - tris_to_remove_per_side * 2 * 3;
+//    if (indices == NULL) return;
+//
+//    u32 n = (1 << subdiv) + 1;
+//    u32 dx = 1;
+//    u32 dy = n;
+//
+//    u32 tl = 0;
+//    u32 tr = (n-1)*dx;
+//    u32 bl = (n-1)*dy;
+//    
+//    // top
+//    u16* p = indices;
+//    for (int c = 0; c < 8; c++) {
+//        mesh_subdiv_plane(subdiv, NULL, 0, NULL, p, nindices);
+//        u32 count = 0;
+//        u16 indices_to_remove[counts[c]];
+//        for (u32 i = 1; i < tr; i++) ir1[count++]; // parametrize this?
+//        for (u32 i = 0; i < count; i++) {
+//            remove_indices_containing(p, nindices, ir1[i]);
+//        }
+//        p += counts[0];
+//    }
+//}

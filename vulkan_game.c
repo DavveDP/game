@@ -13,40 +13,6 @@ const char* enabledLayerNames[] = {
     "VK_LAYER_KHRONOS_validation"
 };
 
-typedef struct PhysicalDevice {
-    VkPhysicalDevice handle;
-    VkPhysicalDeviceProperties props;
-    VkPhysicalDeviceMemoryProperties memory_props;
-    u32 presentIndex;
-
-    struct {
-        u32 index;
-        VkQueueFamilyProperties props;
-    } graphicsQF;
-
-    struct {
-        u32 index;
-        VkQueueFamilyProperties props;
-    } presentQF;
-    VkPresentModeKHR presentMode;
-
-    struct {
-        u32 count;
-        VkSurfaceFormatKHR* items;
-        VkSurfaceFormatKHR selected;
-    } formats;
-
-    VkSurfaceCapabilitiesKHR surfaceCapabilities;
-} PhysicalDevice;
-
-typedef struct Swapchain {
-    VkSwapchainKHR handle;
-    VkImage* images;
-    VkImageView* imageViews;
-    VkFramebuffer* framebuffers;
-    u32 imageCount;
-} Swapchain;
-
 size_t get_swapchain_size(u32 imageCount) {
     arena_t a = arena_create(NULL, SIZE_MAX);
     alloc(&a, Swapchain);
@@ -54,74 +20,6 @@ size_t get_swapchain_size(u32 imageCount) {
     alloc_array(&a, VkImageView, imageCount);
     alloc_array(&a, VkFramebuffer, imageCount);
     return (size_t)(uintptr_t)a.curr;
-}
-
-typedef struct LogicalDevice {
-    VkDevice handle;
-    struct {
-        VkQueue graphics;
-        VkQueue present;
-    } queueHandles;
-    Swapchain* swapchain;
-    block_alloc_t swapchain_allocator;
-} LogicalDevice;
-
-typedef struct {
-    VkPipeline handle;
-    VkPipelineLayout layout;
-    VkDescriptorSetLayout descriptor_set_layout;
-    VkDescriptorSet* descriptor_sets; // per frame
-    // offset per frame 
-    VkBuffer uniform_buffer;        
-    VkDeviceMemory uniform_memory;
-    void* uniform_mapped;
-} pipeline_t;
-
-typedef struct {
-    // indexed by frame
-    VkCommandBuffer* cmd_buffers_graphics;
-    VkSemaphore* image_available_semaphores;
-    VkSemaphore* render_finished_semaphores;
-    VkFence* in_flight_fences;
-
-    VkCommandPool cmd_pool_graphics_auto_reset;
-    VkCommandPool cmd_pool_graphics_transient;
-    u32 frames_in_flight;
-    u32 image_count;
-    u32 curr_image_index;
-    u32 frame;
-    bool recreate_swapchain;
-    u8 swapchain_cooldown;
-} render_state_t;
-
-typedef struct VulkanCtx {
-    VkInstance instance;
-    struct {
-        PhysicalDevice* selected;
-        PhysicalDevice* all;
-        u32 count;
-    } physicalDevice;
-
-    LogicalDevice device;
-    VkSurfaceKHR surface;
-    VkRenderPass renderPass;
-    // staging
-    u8* staging_buffer_cpu_mem;
-    VkBuffer staging_buffer;
-    VkDeviceMemory staging_bufferMemory;
-    // pools
-    VkDescriptorPool descriptor_pool_permanent;
-
-    // frame-by-frame state
-    render_state_t render_state;
-} VulkanCtx;
-
-
-u32 window_height(VulkanCtx* ctx) {
-    return ctx->physicalDevice.selected->surfaceCapabilities.currentExtent.height;
-}
-u32 window_width(VulkanCtx* ctx) {
-    return ctx->physicalDevice.selected->surfaceCapabilities.currentExtent.width;
 }
 
 void vulkan_create_logical_device(VulkanCtx* ctx) {
@@ -393,24 +291,15 @@ typedef struct {
 
 #include <terrain_vulkan.c>
 
-typedef struct {
-    VulkanCtx ctx;
-    struct {
-        void* mapped;
-        VkDescriptorSet* descriptor_sets;
-        VkDescriptorSetLayout descriptor_set_layout;
-        VkDeviceMemory memory;
-        VkBuffer buffer;
-    } ubo_global;
-    terrain_gpu_t terrain;
-} vulkan_state_t;
-
-vulkan_state_t init_rendering(
+vulkan_state_t* init_rendering(
         arena_t* arena_permanent, 
         arena_t* arena_scratch, 
-        VkResult (*surface_factory)(VkInstance instance, VkSurfaceKHR* surface_out)) 
+        VkResult (*surface_factory)(VkInstance instance, VkSurfaceKHR* surface_out),
+        file_data_t vert_shader,
+        file_data_t frag_shader) 
 {
-    VulkanCtx ctx = {0}; // maybe put in app arena?
+    vulkan_state_t* state = alloc(arena_permanent, vulkan_state_t);
+    VulkanCtx* ctx = &state->ctx;
 
     VkResult res;
     // create instance
@@ -431,19 +320,19 @@ vulkan_state_t init_rendering(
             .enabledExtensionCount = LEN(enabledInstanceExtensionNames),
             .ppEnabledExtensionNames = enabledInstanceExtensionNames
         };
-        res = vkCreateInstance(&info, NULL, &ctx.instance);
+        res = vkCreateInstance(&info, NULL, &ctx->instance);
         assert(res == VK_SUCCESS);
     }
-    res = surface_factory(ctx.instance, &ctx.surface);
+    res = surface_factory(ctx->instance, &ctx->surface);
     assert(res == VK_SUCCESS);
 
     // find phys devices, TODO: score and sort them
     {
         u32 nPhys;
-        VkResult res = vkEnumeratePhysicalDevices(ctx.instance, &nPhys, NULL);
+        VkResult res = vkEnumeratePhysicalDevices(ctx->instance, &nPhys, NULL);
         assert(res == VK_SUCCESS);
         VkPhysicalDevice* handles = alloc_array(arena_scratch, VkPhysicalDevice, nPhys);
-        res = vkEnumeratePhysicalDevices(ctx.instance, &nPhys, handles);
+        res = vkEnumeratePhysicalDevices(ctx->instance, &nPhys, handles);
         assert(res == VK_SUCCESS);
         //printf("phys device count: %u\n", nPhys);
 
@@ -496,7 +385,7 @@ vulkan_state_t init_rendering(
                 // grab first presents queue family, beware can be several!
                 VkBool32 supported = 0;
                 if (vkGetPhysicalDeviceSurfaceSupportKHR(
-                            handles[i], q, ctx.surface, &supported) == VK_SUCCESS && 
+                            handles[i], q, ctx->surface, &supported) == VK_SUCCESS && 
                         supported) {
                     validDevice->presentQF.index = q;
                     validDevice->presentQF.props = pqfs[q];
@@ -505,14 +394,14 @@ vulkan_state_t init_rendering(
             }
 
             //// surface capabilities (only to check min image count or whatever, likely not that important)
-            res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(handles[i], ctx.surface, &validDevice->surfaceCapabilities);
+            res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(handles[i], ctx->surface, &validDevice->surfaceCapabilities);
             if (res != VK_SUCCESS) continue;
 
             // formats
-            res = vkGetPhysicalDeviceSurfaceFormatsKHR(handles[i], ctx.surface, &validDevice->formats.count, NULL);
+            res = vkGetPhysicalDeviceSurfaceFormatsKHR(handles[i], ctx->surface, &validDevice->formats.count, NULL);
             if (res != VK_SUCCESS) continue;
             validDevice->formats.items = alloc_array(arena_scratch /*discarded*/, VkSurfaceFormatKHR, validDevice->formats.count);
-            vkGetPhysicalDeviceSurfaceFormatsKHR(handles[i], ctx.surface, &validDevice->formats.count, validDevice->formats.items);
+            vkGetPhysicalDeviceSurfaceFormatsKHR(handles[i], ctx->surface, &validDevice->formats.count, validDevice->formats.items);
             // get preferred format
             validDevice->formats.selected = validDevice->formats.items[0];
             for (int f = 0; f < validDevice->formats.count; f++) {
@@ -525,10 +414,10 @@ vulkan_state_t init_rendering(
 
             // present mode
             u32 nPresentModes;
-            res = vkGetPhysicalDeviceSurfacePresentModesKHR(handles[i], ctx.surface, &nPresentModes, NULL);
+            res = vkGetPhysicalDeviceSurfacePresentModesKHR(handles[i], ctx->surface, &nPresentModes, NULL);
             if (res != VK_SUCCESS) continue;
             VkPresentModeKHR* presentModes = alloc_array(arena_permanent /*saved*/, VkPresentModeKHR, nPresentModes);
-            vkGetPhysicalDeviceSurfacePresentModesKHR(handles[i], ctx.surface, &nPresentModes, presentModes);
+            vkGetPhysicalDeviceSurfacePresentModesKHR(handles[i], ctx->surface, &nPresentModes, presentModes);
             // get preferred present mode
             validDevice->presentMode = VK_PRESENT_MODE_FIFO_KHR;
             for (int p = 0; p < nPresentModes; p++) {
@@ -544,31 +433,31 @@ vulkan_state_t init_rendering(
             // this is a valid device
             //printf("Found device: %s\n", validDevice->props.deviceName);
             // first device is assigned to the ptr
-            if (ctx.physicalDevice.count == 0) {
-                ctx.physicalDevice.all = validDevice;
+            if (ctx->physicalDevice.count == 0) {
+                ctx->physicalDevice.all = validDevice;
             }
-            ctx.physicalDevice.count++;
+            ctx->physicalDevice.count++;
             // advance arena mark, ie "lock in" the device
             validDeviceMark = arena_mark(arena_permanent); 
         }
     }
-    assert(ctx.physicalDevice.all != NULL && ctx.physicalDevice.count > 0);
+    assert(ctx->physicalDevice.all != NULL && ctx->physicalDevice.count > 0);
     // select device, can be changed later based on some scoring I guess
-    ctx.physicalDevice.selected = &ctx.physicalDevice.all[0];
-    //printf("Selected device: %s\n", ctx.physicalDevice.selected->props.deviceName);
-    vulkan_create_logical_device(&ctx);
+    ctx->physicalDevice.selected = &ctx->physicalDevice.all[0];
+    //printf("Selected device: %s\n", ctx->physicalDevice.selected->props.deviceName);
+    vulkan_create_logical_device(ctx);
 
     // get image count here to determine max frames in flight, does that even make sense?
-    ctx.render_state.image_count = get_surface_capabilities_image_count(&ctx);
-    ctx.render_state.frames_in_flight = MIN(ctx.render_state.image_count, MAX_FRAMES_IN_FLIGHT);
-    assert(ctx.render_state.frames_in_flight > 0);
+    ctx->render_state.image_count = get_surface_capabilities_image_count(ctx);
+    ctx->render_state.frames_in_flight = MIN(ctx->render_state.image_count, MAX_FRAMES_IN_FLIGHT);
+    assert(ctx->render_state.frames_in_flight > 0);
 
     // create render pass
     {
         VkAttachmentDescription attachments[] = {
             // swapchain image view
             {
-                .format = ctx.physicalDevice.selected->formats.selected.format,
+                .format = ctx->physicalDevice.selected->formats.selected.format,
                 .samples = VK_SAMPLE_COUNT_1_BIT,
                 .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
                 .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
@@ -612,59 +501,68 @@ vulkan_state_t init_rendering(
             .dependencyCount = 1,
             .pDependencies = &dependency
         };
-        res = vkCreateRenderPass(ctx.device.handle, &renderPassInfo, NULL, &ctx.renderPass);
+        res = vkCreateRenderPass(ctx->device.handle, &renderPassInfo, NULL, &ctx->renderPass);
         assert(res == VK_SUCCESS);
     }
 
-    // init staging buffers, say 16 Mb for now
-    {
-        const u64 size = MB(16);
-        create_buffer(
-                &ctx, 
-                size,
-                VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                VK_SHARING_MODE_EXCLUSIVE,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                &ctx.staging_buffer,
-                &ctx.staging_bufferMemory);
-        vkMapMemory(ctx.device.handle, ctx.staging_bufferMemory, 0, size, 0, (void**)&ctx.staging_buffer_cpu_mem);
-    }
+    // Create heaps
+    ctx->heap_uniforms = gpu_heap_create(
+            ctx->device.handle, 
+            ctx->physicalDevice.selected->handle, 
+            &ctx->physicalDevice.selected->memory_props, 
+            MB(16), 
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    ctx->heap_staging = gpu_heap_create(
+            ctx->device.handle, 
+            ctx->physicalDevice.selected->handle, 
+            &ctx->physicalDevice.selected->memory_props, 
+            MB(16), 
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT, 
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    ctx->heap_local_mesh = gpu_heap_create(
+            ctx->device.handle, 
+            ctx->physicalDevice.selected->handle, 
+            &ctx->physicalDevice.selected->memory_props, 
+            MB(16), 
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
     // command pools
     {
         VkCommandPoolCreateInfo info1 = {
             .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
             .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-            .queueFamilyIndex = ctx.physicalDevice.selected->graphicsQF.index
+            .queueFamilyIndex = ctx->physicalDevice.selected->graphicsQF.index
         };
-        res = vkCreateCommandPool(ctx.device.handle, &info1, NULL, &ctx.render_state.cmd_pool_graphics_auto_reset);
+        res = vkCreateCommandPool(ctx->device.handle, &info1, NULL, &ctx->render_state.cmd_pool_graphics_auto_reset);
         assert(res == VK_SUCCESS);
 
         VkCommandPoolCreateInfo info2 = {
             .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
             .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
-            .queueFamilyIndex = ctx.physicalDevice.selected->graphicsQF.index
+            .queueFamilyIndex = ctx->physicalDevice.selected->graphicsQF.index
         };
-        res = vkCreateCommandPool(ctx.device.handle, &info2, NULL, &ctx.render_state.cmd_pool_graphics_transient);
+        res = vkCreateCommandPool(ctx->device.handle, &info2, NULL, &ctx->render_state.cmd_pool_graphics_transient);
         assert(res == VK_SUCCESS);
     }
 
     // create command buffers
-    ctx.render_state.cmd_buffers_graphics = alloc_array(arena_permanent, VkCommandBuffer, ctx.render_state.frames_in_flight);
+    ctx->render_state.cmd_buffers_graphics = alloc_array(arena_permanent, VkCommandBuffer, ctx->render_state.frames_in_flight);
     {
         VkCommandBufferAllocateInfo info = {
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-            .commandPool = ctx.render_state.cmd_pool_graphics_auto_reset,
+            .commandPool = ctx->render_state.cmd_pool_graphics_auto_reset,
             .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-            .commandBufferCount = ctx.render_state.frames_in_flight
+            .commandBufferCount = ctx->render_state.frames_in_flight
         };
-        res = vkAllocateCommandBuffers(ctx.device.handle, &info, ctx.render_state.cmd_buffers_graphics);
+        res = vkAllocateCommandBuffers(ctx->device.handle, &info, ctx->render_state.cmd_buffers_graphics);
         assert(res == VK_SUCCESS);
     }
 
-    ctx.render_state.image_available_semaphores = alloc_array(arena_permanent, VkSemaphore, ctx.render_state.frames_in_flight);
-    ctx.render_state.render_finished_semaphores = alloc_array(arena_permanent, VkSemaphore, ctx.render_state.image_count);
-    ctx.render_state.in_flight_fences = alloc_array(arena_permanent, VkFence, ctx.render_state.frames_in_flight);
+    ctx->render_state.image_available_semaphores = alloc_array(arena_permanent, VkSemaphore, ctx->render_state.frames_in_flight);
+    ctx->render_state.render_finished_semaphores = alloc_array(arena_permanent, VkSemaphore, ctx->render_state.image_count);
+    ctx->render_state.in_flight_fences = alloc_array(arena_permanent, VkFence, ctx->render_state.frames_in_flight);
     {
         VkSemaphoreCreateInfo semInfo = {
             .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
@@ -675,65 +573,57 @@ vulkan_state_t init_rendering(
         };
 
         // image available and fences are tied to frame lifetime
-        for (int i = 0; i < ctx.render_state.frames_in_flight; i++) {
-            res = vkCreateSemaphore(ctx.device.handle, &semInfo, NULL, &ctx.render_state.image_available_semaphores[i]);
+        for (int i = 0; i < ctx->render_state.frames_in_flight; i++) {
+            res = vkCreateSemaphore(ctx->device.handle, &semInfo, NULL, &ctx->render_state.image_available_semaphores[i]);
             assert(res == VK_SUCCESS);
-            res = vkCreateFence(ctx.device.handle, &fenceInfo, NULL, &ctx.render_state.in_flight_fences[i]);
+            res = vkCreateFence(ctx->device.handle, &fenceInfo, NULL, &ctx->render_state.in_flight_fences[i]);
             assert(res == VK_SUCCESS);
         }
 
         // render finished isn't and must be indexed based on what acquire returns
-        for (int i = 0; i < ctx.render_state.image_count; i++) {
-            res = vkCreateSemaphore(ctx.device.handle, &semInfo, NULL, &ctx.render_state.render_finished_semaphores[i]);
+        for (int i = 0; i < ctx->render_state.image_count; i++) {
+            res = vkCreateSemaphore(ctx->device.handle, &semInfo, NULL, &ctx->render_state.render_finished_semaphores[i]);
             assert(res == VK_SUCCESS);
         }
     }
     // block allocator for swapchain data, with space for MAX_FRAMES + 1 swapchain infos
     {
-        size_t nBlocks = ctx.render_state.frames_in_flight + 1; // replace with max images
-        size_t blockSize = get_swapchain_size(ctx.render_state.image_count);
+        size_t nBlocks = ctx->render_state.frames_in_flight + 1; // replace with max images
+        size_t blockSize = get_swapchain_size(ctx->render_state.image_count);
         //printf("initializing block alloc\n");
-        ctx.device.swapchain_allocator = block_alloc_create(
+        ctx->device.swapchain_allocator = block_alloc_create(
                 alloc_array_aligned(arena_permanent, u8, block_alloc_bytes_required(blockSize, nBlocks), alignof(Swapchain)),
                 nBlocks,
                 blockSize);
 
-        arena_t temp = arena_create(block_alloc(&ctx.device.swapchain_allocator), blockSize);
+        arena_t temp = arena_create(block_alloc(&ctx->device.swapchain_allocator), blockSize);
         //printf("creating swapchain\n");
-        create_and_set_new_swapchain(&temp, ctx.render_state.image_count, &ctx);
+        create_and_set_new_swapchain(&temp, ctx->render_state.image_count, ctx);
     }
     // descriptor pools
     const u32 desc_limit = 16; // plenty for now
     VkDescriptorPoolSize pool_sizes[] = {
         {
             .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            .descriptorCount = ctx.render_state.frames_in_flight * desc_limit
+            .descriptorCount = ctx->render_state.frames_in_flight * desc_limit
         }
     };
     VkDescriptorPoolCreateInfo pool_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        .maxSets = ctx.render_state.frames_in_flight * desc_limit,
+        .maxSets = ctx->render_state.frames_in_flight * desc_limit,
         .poolSizeCount = 1,
         .pPoolSizes = pool_sizes
     };
-    res = vkCreateDescriptorPool(ctx.device.handle, &pool_info, NULL, &ctx.descriptor_pool_permanent);
+    res = vkCreateDescriptorPool(ctx->device.handle, &pool_info, NULL, &ctx->descriptor_pool_permanent);
     assert(res == VK_SUCCESS);
 
-    vulkan_state_t state;
-    state.ctx = ctx;
     // global uniforms
     {
         // buffer and mapping
-        u64 ubo_global_gpu_stride = (u64)align_up(sizeof(UBO_global_t), ctx.physicalDevice.selected->props.limits.minUniformBufferOffsetAlignment);
-        create_buffer(&ctx,
-                ubo_global_gpu_stride * ctx.render_state.frames_in_flight,
-                VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                VK_SHARING_MODE_EXCLUSIVE,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                &state.ubo_global.buffer,
-                &state.ubo_global.memory);
-        state.ubo_global.mapped = alloc_array(arena_permanent, void*, ctx.render_state.frames_in_flight);
-        vkMapMemory(ctx.device.handle, state.ubo_global.memory, 0, VK_WHOLE_SIZE, 0, &state.ubo_global.mapped);
+        state->ubo_global = alloc_array(arena_permanent, gpu_alloc_t, ctx->render_state.frames_in_flight);
+        for (u32 i = 0; i < ctx->render_state.frames_in_flight; i++) {
+            state->ubo_global[i] = gpu_heap_alloc(&ctx->heap_uniforms, sizeof(UBO_global_t));
+        }
 
         // descriptor set
         VkDescriptorSetLayoutBinding binding = {
@@ -747,35 +637,35 @@ vulkan_state_t init_rendering(
             .bindingCount = 1,
             .pBindings = &binding
         };
-        res = vkCreateDescriptorSetLayout(ctx.device.handle, &info, NULL, &state.ubo_global.descriptor_set_layout);
+        res = vkCreateDescriptorSetLayout(ctx->device.handle, &info, NULL, &state->ubo_global_descriptor_set_layout);
         assert(res == VK_SUCCESS);
 
-        state.ubo_global.descriptor_sets = alloc_array(arena_permanent, VkDescriptorSet, ctx.render_state.frames_in_flight);
+        state->ubo_global_descriptor_sets = alloc_array(arena_permanent, VkDescriptorSet, ctx->render_state.frames_in_flight);
         allocate_descriptor_sets(arena_scratch, 
-                ctx.device.handle, 
-                ctx.descriptor_pool_permanent, 
-                state.ubo_global.descriptor_set_layout, 
-                ctx.render_state.frames_in_flight,
-                state.ubo_global.descriptor_sets);
+                ctx->device.handle, 
+                ctx->descriptor_pool_permanent, 
+                state->ubo_global_descriptor_set_layout, 
+                ctx->render_state.frames_in_flight,
+                state->ubo_global_descriptor_sets);
 
-        VkDescriptorBufferInfo* buffer_info = alloc_array(arena_scratch, VkDescriptorBufferInfo, ctx.render_state.frames_in_flight);
-        VkWriteDescriptorSet* writes = alloc_array(arena_scratch, VkWriteDescriptorSet, ctx.render_state.frames_in_flight);
-        for (u32 i = 0; i < ctx.render_state.frames_in_flight; i++) {
-            buffer_info[i].buffer = state.ubo_global.buffer;
-            buffer_info[i].offset = ubo_global_gpu_stride * i;
+        VkDescriptorBufferInfo* buffer_info = alloc_array(arena_scratch, VkDescriptorBufferInfo, ctx->render_state.frames_in_flight);
+        VkWriteDescriptorSet* writes = alloc_array(arena_scratch, VkWriteDescriptorSet, ctx->render_state.frames_in_flight);
+        for (u32 i = 0; i < ctx->render_state.frames_in_flight; i++) {
+            buffer_info[i].buffer = state->ubo_global[i].heap->buffer,
+            buffer_info[i].offset = state->ubo_global[i].offset,
             buffer_info[i].range = sizeof(UBO_global_t);
 
             writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[i].dstSet = state.ubo_global.descriptor_sets[i];
+            writes[i].dstSet = state->ubo_global_descriptor_sets[i];
             writes[i].dstBinding = 0;
             writes[i].dstArrayElement = 0;
             writes[i].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
             writes[i].pBufferInfo = &buffer_info[i];
             writes[i].descriptorCount = 1;
         }
-        vkUpdateDescriptorSets(ctx.device.handle, ctx.render_state.frames_in_flight, writes, 0, NULL);
+        vkUpdateDescriptorSets(ctx->device.handle, ctx->render_state.frames_in_flight, writes, 0, NULL);
     }
-    state.terrain = terrain_init(arena_permanent, arena_scratch, &ctx, state.ubo_global.descriptor_set_layout);
+    state->terrain = terrain_init(arena_permanent, arena_scratch, ctx, state->ubo_global_descriptor_set_layout, vert_shader, frag_shader);
     return state;
 }
 
@@ -824,8 +714,7 @@ void render(vulkan_state_t* vulkan_state, game_state_t* game_state, float time) 
 
     // update global uniforms
     {
-        u64 ubo_global_gpu_stride = (u64)align_up(sizeof(UBO_global_t), ctx->physicalDevice.selected->props.limits.minUniformBufferOffsetAlignment);
-        UBO_global_t* uniform = (UBO_global_t*)(((u8*)vulkan_state->ubo_global.mapped) + ubo_global_gpu_stride * frame);
+        UBO_global_t* uniform = (UBO_global_t*)vulkan_state->ubo_global[frame].mapped;
         uniform->time = time;
 
         // recompute projection based on screen size
@@ -886,16 +775,20 @@ void render(vulkan_state_t* vulkan_state, game_state_t* game_state, float time) 
         .extent = ctx->physicalDevice.selected->surfaceCapabilities.currentExtent
     };
 
+    VkDescriptorSet sets[] = {vulkan_state->ubo_global_descriptor_sets[frame], vulkan_state->terrain.pipeline.descriptor_sets[frame]};
+    vkCmdBindDescriptorSets(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, terrain->pipeline.layout, 0, LEN(sets), sets, 0,  NULL);
+
     // patch geometry
     vkCmdSetScissor(cmdBuf, 0, 1, &scissor);
-    VkBuffer vertex_buffers[] = {terrain->buffer};
+    VkBuffer vertex_buffers[] = {terrain->gpu_mem_vertices.heap->buffer};
     VkDeviceSize offsets[] = {0};
     vkCmdBindVertexBuffers(cmdBuf, 0, 1, vertex_buffers, offsets);
-    u64 index_offset = sizeof(Vertex_t) * terrain->n_vertices;
-    vkCmdBindIndexBuffer(cmdBuf, terrain->buffer, index_offset, VK_INDEX_TYPE_UINT16);
-
-    VkDescriptorSet sets[] = {vulkan_state->ubo_global.descriptor_sets[frame], vulkan_state->terrain.pipeline.descriptor_sets[frame]};
-    vkCmdBindDescriptorSets(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, terrain->pipeline.layout, 0, LEN(sets), sets, 0,  NULL);
+    //for (u32 i = 0; i < 9; i++) {
+    //    u64 index_offset = terrain->mem_mesh_index_buffer_offset[i];
+    //    vkCmdBindIndexBuffer(cmdBuf, terrain->buffer, index_offset, VK_INDEX_TYPE_UINT16);
+    //    vkCmdDrawIndexed(cmdBuf, terrain->n_indices, terrain->, 0, 0, 0);
+    //}
+    vkCmdBindIndexBuffer(cmdBuf, terrain->gpu_mem_indices.heap->buffer, terrain->gpu_mem_indices.offset, VK_INDEX_TYPE_UINT16);
     vkCmdDrawIndexed(cmdBuf, terrain->n_indices, 1, 0, 0, 0);
     vkCmdEndRenderPass(cmdBuf);
     res = vkEndCommandBuffer(cmdBuf);

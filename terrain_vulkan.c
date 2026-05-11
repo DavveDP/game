@@ -1,42 +1,21 @@
-typedef struct {
-    VkBuffer buffer;
-    VkDeviceMemory memory;
-    u32 n_vertices;
-    u32 n_indices;
-    pipeline_t pipeline;
-} terrain_gpu_t;
-
-typedef struct {
-    u32 some_int;
-    u32 other_int;
-    // terrain uniform data
-} UBO_terrain_t;
-
+#include <mesh.c> // plane subdivision
 // Rendering
 
-pipeline_t terrain_create_pipeline(arena_t* arena_permanent, 
+pipeline_t terrain_create_pipeline(
+        arena_t* arena_permanent, 
         arena_t* arena_scratch, 
         VulkanCtx* ctx, 
-        VkDescriptorSetLayout ubo_global_descriptor_set_layout) 
+        VkDescriptorSetLayout ubo_global_descriptor_set_layout,
+        file_data_t vert_shader,
+        file_data_t frag_shader) 
 {
     pipeline_t pipeline;
     VkResult res;
-    // create uniform buffer (one for each frame)
-    u64 ubo_terrain_gpu_stride = (u64)align_up(sizeof(UBO_terrain_t), ctx->physicalDevice.selected->props.limits.minUniformBufferOffsetAlignment);
-    {
-        // TODO: GPU allocator...
-        create_buffer(
-                ctx, 
-                ubo_terrain_gpu_stride * ctx->render_state.frames_in_flight,
-                VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 
-                VK_SHARING_MODE_EXCLUSIVE, 
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                &pipeline.uniform_buffer,
-                &pipeline.uniform_memory);
-        vkMapMemory(ctx->device.handle, 
-                pipeline.uniform_memory, 
-                0,
-                VK_WHOLE_SIZE, 0, &pipeline.uniform_mapped);
+
+    // alloc uniform buffer (one for each frame)
+    pipeline.uniforms = alloc_array(arena_permanent, gpu_alloc_t, ctx->render_state.frames_in_flight);
+    for (u32 i = 0; i < ctx->render_state.frames_in_flight; i++) {
+        pipeline.uniforms[i] = gpu_heap_alloc(&ctx->heap_uniforms, sizeof(UBO_terrain_t));
     }
 
     // descriptor sets
@@ -71,8 +50,8 @@ pipeline_t terrain_create_pipeline(arena_t* arena_permanent,
         // (should obviously match the layout binding that we will put in the pipeline)
         for (int i = 0; i < ctx->render_state.frames_in_flight; i++) {
             VkDescriptorBufferInfo bufferInfo = {
-                .buffer = pipeline.uniform_buffer,
-                .offset = ubo_terrain_gpu_stride * i,
+                .buffer = pipeline.uniforms[i].heap->buffer,
+                .offset = pipeline.uniforms[i].offset,
                 .range = sizeof(UBO_terrain_t)
             };
             VkWriteDescriptorSet descriptorWrite = {
@@ -91,21 +70,17 @@ pipeline_t terrain_create_pipeline(arena_t* arena_permanent,
     // create pipeline
     {
         // create shader stages
-        arena_align(arena_scratch, alignof(u32));
-        file_data_t vertex_code   = read_file(arena_scratch, "vertex.spv");
-        arena_align(arena_scratch, alignof(u32));
-        file_data_t fragment_code = read_file(arena_scratch, "fragment.spv");
         VkPipelineShaderStageCreateInfo stages[] = {
             {
                 .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                 .stage = VK_SHADER_STAGE_VERTEX_BIT,
-                .module = create_shader_module(ctx->device.handle, (const u32*)vertex_code.data, vertex_code.size, &res),
+                .module = create_shader_module(ctx->device.handle, (const u32*)vert_shader.data, vert_shader.size, &res),
                 .pName = "main"
             },
             {
                 .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                 .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-                .module = create_shader_module(ctx->device.handle, (const u32*)fragment_code.data, fragment_code.size, &res),
+                .module = create_shader_module(ctx->device.handle, (const u32*)frag_shader.data, frag_shader.size, &res),
                 .pName = "main"
             }
         };
@@ -242,6 +217,13 @@ typedef struct {
     float k;
 } lod_to_dist_params_t;
 
+typedef struct {
+    float x, y;
+    float size;
+    u8 buf_index;
+    // padding...
+} terrain_instance_data_t;
+
 static inline float lod_to_dist(u8 lod, const lod_to_dist_params_t* p) {
     return p->min_lod_dist * (1 - powf(lod / LOD_COUNT, p->k));
 }
@@ -254,7 +236,14 @@ void lod_to_dist_set_params(const lod_to_dist_params_t* params) {
     }
 }
 
-terrain_gpu_t terrain_init(arena_t* arena_permanent, arena_t* arena_scratch, VulkanCtx* ctx, VkDescriptorSetLayout ubo_global_descriptor_set_layout) {
+terrain_gpu_t terrain_init(
+        arena_t* arena_permanent, 
+        arena_t* arena_scratch, 
+        VulkanCtx* ctx, 
+        VkDescriptorSetLayout ubo_global_descriptor_set_layout, 
+        file_data_t vert_shader, 
+        file_data_t frag_shader) 
+{
     const lod_to_dist_params_t default_params = {
         .min_lod_dist = GRID_SIZE/sqrtf(2),
         .k = 3.0f
@@ -262,7 +251,7 @@ terrain_gpu_t terrain_init(arena_t* arena_permanent, arena_t* arena_scratch, Vul
     lod_to_dist_set_params(&default_params);
 
     terrain_gpu_t terrain;
-    terrain.pipeline = terrain_create_pipeline(arena_permanent, arena_scratch, ctx, ubo_global_descriptor_set_layout);
+    terrain.pipeline = terrain_create_pipeline(arena_permanent, arena_scratch, ctx, ubo_global_descriptor_set_layout, vert_shader, frag_shader);
     // allocate vertices
     {
         mesh_subdiv_plane(5, NULL, 0, &terrain.n_vertices, NULL, &terrain.n_indices);
@@ -270,35 +259,34 @@ terrain_gpu_t terrain_init(arena_t* arena_permanent, arena_t* arena_scratch, Vul
         // allocate CPU temp buffers
         Vertex_t* vertices = alloc_array(arena_scratch, Vertex_t, terrain.n_vertices);
         u16* indices = alloc_array(arena_scratch, u16, terrain.n_indices);
-        u64 total_size = sizeof(*vertices) * terrain.n_vertices + sizeof(*indices) * terrain.n_indices;
 
         // generate mesh
         mesh_subdiv_plane(5, &vertices->pos, sizeof(*vertices), &terrain.n_vertices, indices, &terrain.n_indices);
-
-        // create gpu buffer (alignment is fine, since u16 will always be aligned after verts)
-        create_buffer(ctx,
-                total_size,
-                VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-                VK_SHARING_MODE_EXCLUSIVE,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                &terrain.buffer,
-                &terrain.memory);
+        
+        // TODO: assign terrain.gpu_mem_index_buffer_offsets
 
         // copy all data to staging so that layout is:
         // vertex, ib1, ib2, ...
-        u8* p = ctx->staging_buffer_cpu_mem;
-        memcpy(p, vertices, terrain.n_vertices * sizeof(*vertices));
-        p += terrain.n_vertices * sizeof(*vertices);
-        memcpy(p, indices, terrain.n_indices * sizeof(*indices));
+        u64 size_vertices = sizeof(*vertices) * terrain.n_vertices;
+        u64 size_indices = sizeof(*indices) * terrain.n_indices;
+
+        gpu_alloc_t staging_vertices = gpu_heap_alloc(&ctx->heap_staging, size_vertices);
+        gpu_alloc_t staging_indices = gpu_heap_alloc_unaligned(&ctx->heap_staging, size_indices);
+        terrain.gpu_mem_vertices = gpu_heap_alloc(&ctx->heap_local_mesh, size_vertices);
+        terrain.gpu_mem_indices = gpu_heap_alloc_unaligned(&ctx->heap_local_mesh, size_indices);
+
+        memcpy(staging_vertices.mapped, vertices, size_vertices);
+        memcpy(staging_indices.mapped, indices, size_indices);
 
         // upload
         staging_buffer_upload_t upload_info = {
-            .copyRegion = (VkBufferCopy){0, 0, total_size},
-            .src = ctx->staging_buffer,
-            .dst = terrain.buffer
+            .copyRegion = (VkBufferCopy){staging_vertices.offset, terrain.gpu_mem_vertices.offset, size_vertices + size_indices},
+            .src = staging_vertices.heap->buffer,
+            .dst = terrain.gpu_mem_vertices.heap->buffer
         };
         upload_staging_buffer(ctx, &upload_info);
     }
+    gpu_heap_reset(&ctx->heap_staging);
     arena_reset(arena_scratch);
     return terrain;
 }
@@ -308,8 +296,15 @@ typedef struct {
     float x, z;
 } qt_node;
 
+static u32 instance_count;
+static terrain_instance_data_t* instance_data_buffer_g;
+
 static inline void output_instance(qt_node node, u8 buf_index) {
-    // write actual instace data to some buffer, maybe set a global?
+    instance_data_buffer_g[instance_count].x = node.x;
+    instance_data_buffer_g[instance_count].y = node.x;
+    instance_data_buffer_g[instance_count].size = node.size;
+    instance_data_buffer_g[instance_count].buf_index = buf_index;
+    instance_count++;
 }
 
 // 0, not visible
@@ -388,7 +383,7 @@ static u8 fill_instance(qt_node node, vec2 camera_xz_pos, frustum_t* frustum, u8
             case 0b01: buf_index = 3 + (i >> 1); break; // z finer
             case 0b10: buf_index = 1 + (i & 1);  break; // x finer
             case 0b11: buf_index = 5 + i;        break; // corner
-            default: assert(false);              break;
+            default: unreachable();              break;
         }
         output_instance(node, buf_index);
     }
@@ -396,7 +391,7 @@ static u8 fill_instance(qt_node node, vec2 camera_xz_pos, frustum_t* frustum, u8
     return CHUNKED_LOD_RESULT_SUBDIVIDED;
 }
 
-void terrain_fill_instance_data(camera_t* cam) {
+void terrain_fill_instance_data(camera_t* cam, terrain_instance_data_t* instance_data_buffer) {
     vec2 fwd = vec2_normalized((vec2){cam->transform.pos.x, cam->transform.pos.z});
     float corner_x = fwd.x >= 0
         ? (floorf(cam->transform.pos.x / GRID_SIZE) + 1) * GRID_SIZE
@@ -412,5 +407,7 @@ void terrain_fill_instance_data(camera_t* cam) {
     };
 
     frustum_t f = camera_get_frustum(cam);
+    instance_count = 0;
+    instance_data_buffer_g = instance_data_buffer;
     fill_instance(root, (vec2){cam->transform.pos.x, cam->transform.pos.z}, &f, 0);
 }

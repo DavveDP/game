@@ -25,7 +25,6 @@ typedef struct {
     u8 btn_states[BTN_COUNT];
     float mouse_dx, mouse_dy;
 } input_t;
-
 // called by game
 static inline bool was_btn_released(input_t* input, BUTTON btn) {
     return input->btn_states[btn] == BTN_STATE_RELEASED_THIS_UPDATE;
@@ -61,11 +60,15 @@ static inline void end_of_frame_btn_update(input_t* input) {
     }
 }
 
-// Files
+
+// API types
 
 typedef struct {
-    u8* data;
-    size_t size;
-} file_data_t;
+    camera_t main_camera;
+    vec3 camera_speed;
+    u32 current_subdiv;
+} game_state_t;
 
-file_data_t read_file(arena_t* arena, const char* path);
+typedef struct {
+    void (*update)(input_t* input, game_state_t* state, float delta_time);
+} game_api_t;

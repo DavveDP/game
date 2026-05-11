@@ -1,11 +1,5 @@
-typedef struct {
-    camera_t main_camera;
-    vec3 camera_speed;
-    u32 current_subdiv;
-} game_state_t;
-
 void main_camera_movement(input_t* input, game_state_t* game_state, float delta_time) {
-    // wasd to move camera, shift for sprint
+    // wasd to move camera
     vec3 camera_acceleration = vec3_zero;
     if (was_btn_held_or_pressed(input, BTN_MOVE_FORWARD)) {
         camera_acceleration.z =-1.0f;
@@ -40,6 +34,10 @@ void main_camera_movement(input_t* input, game_state_t* game_state, float delta_
     // exponential smoothing toward target
     float responsiveness = 10.0f;
     *speed = vec3_lerp(*speed, target_velocity, 1.0f - expf(-responsiveness * delta_time));
+    const float dead_zone = 2e-2f;
+    if (vec3_sq_magnitude(*speed) < dead_zone * dead_zone) {
+        *speed = vec3_zero;
+    }
 
     vec3 speed_xz = {
         speed->x,
@@ -49,6 +47,7 @@ void main_camera_movement(input_t* input, game_state_t* game_state, float delta_
     vec3 speed_y = {
         .y = speed->y
     };
+
 
     transform_move_local(cam_trans, vec3_scale(speed_xz, delta_time));
     transform_move_global(cam_trans, vec3_scale(speed_y, delta_time));
@@ -66,7 +65,7 @@ void main_camera_movement(input_t* input, game_state_t* game_state, float delta_
     }
 }
 
-void game_update(input_t* input, game_state_t* game_state, float delta_time) {
+void update(input_t* input, game_state_t* game_state, float delta_time) {
     // arrows control subdivision for now
     //if (was_btn_pressed(input, BTN_SUBDIV_INC)) {
     //    game_state->current_subdiv = (game_state->current_subdiv + 1) % n_index_buffers;

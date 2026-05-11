@@ -3,6 +3,7 @@
 
 // align ptr to mult, see Hacker's Delight (removed unary for portability reasons)
 #define align_up(ptr, mult) (typeof(ptr))(((uintptr_t)(ptr) + (mult) - 1) & ~(uintptr_t)((mult)-1))
+#define align_down(ptr, mult) (typeof(ptr))((uintptr_t)(ptr) & ~(uintptr_t)((mult)-1))
 #define alloc_array(Alloc, T, N) \
     alloc_array_aligned(Alloc, T, N, alignof(T))
 #define alloc_array_aligned(Alloc, T, N, A) \

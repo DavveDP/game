@@ -1,4 +1,5 @@
-#define _POSIX_C_SOURCE 199309L // required for clock_gettime
+//#define _POSIX_C_SOURCE 199309L // required for clock_gettime
+#define _POSIX_C_SOURCE 200112L // required by readlink
 
 // Essentials from C stdlib
 #include <assert.h>
@@ -7,32 +8,61 @@
 #include <string.h>
 #include <defines.h>
 
-// My platform agnostic files
 #include <alloc.c>
 #include <math.c> // links with math
-#include <mesh.c> // plane subdivision
-#include <game.h>
 #include <transforms.c>
-#include <game.c>
+// My platform agnostic files
 
-// Begin Platfrom specific code
+#include <game.h>
+// function pointer in both cases
+#ifndef ENABLE_HOT_RELOAD
+    #include <game.c>
+#endif
 
-// Vulkan
 #define VK_USE_PLATFORM_XLIB_KHR
 #include <vulkan/vulkan.h>
-#include <vulkan_game.c> 
+#include <alloc_gpu.c>
+#include <vulkan_game.h>
 
-// Linux
-#include <sys/mman.h>
+#ifndef ENABLE_HOT_RELOAD
+    #include <vulkan_game.c>
+#endif
+
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <signal.h>
 #include <stdio.h>
+
+#ifdef ENABLE_HOT_RELOAD
+    #define GAME_LIB_FILENAME "game.so"
+    #include <hot_reload.c>
+#endif
+
+// Begin Platfrom specific code
+
+// Linux
+#include <sys/mman.h>
+#include <libgen.h>
+#include <signal.h>
 #include <time.h>
 #include <X11/Xlib.h>
 #include <X11/XKBlib.h>
 #include <X11/extensions/XInput2.h>
+
+void set_proc_dir_to_exe_dir() {
+    char exe_path[4096];
+    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+    exe_path[len] = '\0';
+    //printf("exe_path: %s\n", exe_path);
+    char *exe_dir = dirname(exe_path);
+    //printf("exe_dir: %s\n", exe_dir);
+    int ret = chdir(exe_dir);
+    //printf("chdir ret: %d\n", ret);  // 0 = success, -1 = fail
+
+    char cwd[4096];
+    getcwd(cwd, sizeof(cwd));
+    //printf("cwd is now: %s\n", cwd);
+}
 
 // Input
 
@@ -133,6 +163,7 @@ VkResult create_x11_surface(VkInstance instance, VkSurfaceKHR* surface_out) {
 }
 
 int main(int argc, char** argv) {
+    set_proc_dir_to_exe_dir();
     //world_t world;
     //world.main_camera = camera_looking_at_from((vec3){0,0,0}, (vec3){0,2,0,});
     //quat_print(world.main_camera.transform.rot, printf);
@@ -142,10 +173,19 @@ int main(int argc, char** argv) {
     // Signal handling
     signal(SIGINT, sigint_and_sigterm_handler);
     signal(SIGTERM, sigint_and_sigterm_handler);
+    game_api_t game_api;
+    render_api_t render_api;
+#ifdef ENABLE_HOT_RELOAD
+    hot_reload_sync(GAME_LIB_FILENAME, &game_api, &render_api);
+#else
+    game_api.update = update;
+    render_api.render = render;
+    render_api.init_rendering = init_rendering;
+#endif
     init_btn_key_code_table();
 
     // Memory
-    
+
     // Our only alloc call, (see allocators)
     void* mem = mmap(NULL, GB(1), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     assert(mem != MAP_FAILED);
@@ -229,8 +269,13 @@ int main(int argc, char** argv) {
         do { XNextEvent(display, &e); } while (e.type != ConfigureNotify);
     }
 
+    arena_align(&arena_scratch, alignof(u32));
+    file_data_t vertex_code   = read_file(&arena_scratch, "../shaders/bin/vertex.spv");
+    arena_align(&arena_scratch, alignof(u32));
+    file_data_t fragment_code = read_file(&arena_scratch, "../shaders/bin/fragment.spv");
+
     // Rendering
-    vulkan_state_t renderer = init_rendering(&arena_permanent, &arena_scratch, create_x11_surface);
+    vulkan_state_t* renderer = render_api.init_rendering(&arena_permanent, &arena_scratch, create_x11_surface, vertex_code, fragment_code);
 
     // Game Loop
 
@@ -252,6 +297,9 @@ update_start:
         float delta_time = ((float)(new_time - curr_time)/ 1000000000ull);
         curr_time = new_time; 
         float time = ((float)(curr_time - start_time)/ 1000000000ull);
+#ifdef ENABLE_HOT_RELOAD
+        //RUN_EVERY(hot_reload_sync(GAME_LIB_FILENAME, &game_api, &render_api), 30, delta_time);
+#endif
 
         // pump x events
         while (XPending(display)) {
@@ -259,11 +307,11 @@ update_start:
             switch (e.type) {
                 case ConfigureNotify:
                     {
-                        if(renderer.ctx.render_state.swapchain_cooldown == 0 && (
-                                    e.xconfigure.width != renderer.ctx.physicalDevice.selected->surfaceCapabilities.currentExtent.width || 
-                                    e.xconfigure.height != renderer.ctx.physicalDevice.selected->surfaceCapabilities.currentExtent.height)) 
+                        if(renderer->ctx.render_state.swapchain_cooldown == 0 && (
+                                    e.xconfigure.width != renderer->ctx.physicalDevice.selected->surfaceCapabilities.currentExtent.width || 
+                                    e.xconfigure.height != renderer->ctx.physicalDevice.selected->surfaceCapabilities.currentExtent.height)) 
                         {
-                            renderer.ctx.render_state.recreate_swapchain = true;
+                            renderer->ctx.render_state.recreate_swapchain = true;
                         }
                     }
                     break;
@@ -367,16 +415,16 @@ update_start:
         input.mouse_dy = cursor_position.y - cursor_position.prev_y;
         //printf("fps: %f\n", 1/delta_time);
         //vec3_print(game_state.main_camera.transform.pos, printf);
-        game_update(&input, &game_state, delta_time);
+        game_api.update(&input, &game_state, delta_time);
         // warp cursor back to centre
         if (window_focused) {
-            XWarpPointer(display, None, window, 0, 0, 0, 0, window_width(&renderer.ctx) / 2, window_height(&renderer.ctx) / 2);
+            XWarpPointer(display, None, window, 0, 0, 0, 0, window_width(&renderer->ctx) / 2, window_height(&renderer->ctx) / 2);
         }
         // update prevs and whatnot
         end_of_frame_btn_update(&input);
         end_of_frame_mouse_update();
 
-        render(&renderer, &game_state, time);
+        render_api.render(renderer, &game_state, time);
     }
 
     printf("Exiting gracefully\n");
