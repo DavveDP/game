@@ -1,6 +1,7 @@
 #!/bin/bash
 
-FLAGS="-std=c23 -Wall -Werror -Wno-unused-variable -Wno-unused-function -Wno-unused-but-set-variable -Wno-missing-braces"
+FLAGS="-std=c23 -Wall"
+DEBUG_FLAGS="-Werror -Wno-unused-variable -Wno-unused-function -Wno-unused-but-set-variable -Wno-missing-braces"
 INCLUDE="-I$VULKAN_SDK/include -I."
 LIB="-L$VULKAN_SDK/lib -lvulkan -lm -lX11 -lXi"
 mkdir -p bin
@@ -9,14 +10,14 @@ glslc shaders/shader.vert -o shaders/bin/vertex.spv
 glslc shaders/shader.frag -o shaders/bin/fragment.spv
 
 if [ "$1" = "hot" ]; then
-    FLAGS="$FLAGS -g"
+    FLAGS="$FLAGS $DEBUG_FLAGS -g"
     clang -shared -fPIC -o bin/game.so $FLAGS game_lib_main.c $INCLUDE $LIB
     clang -o bin/a -DENABLE_HOT_RELOAD $FLAGS linux_main.c $INCLUDE $LIB
 elif [ "$1" = "release" ]; then
     FLAGS="$FLAGS -o3 -flto -DNDEBUG"
     clang -o bin/a -DUNITY_BUILD $FLAGS linux_main.c $INCLUDE $LIB
 else
-    FLAGS="$FLAGS -g"
+    FLAGS="$FLAGS $DEBUG_FLAGS -g"
     clang -o bin/a -DUNITY_BUILD $FLAGS linux_main.c $INCLUDE $LIB
 fi
 

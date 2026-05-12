@@ -506,12 +506,12 @@ vulkan_state_t* init_rendering(
     }
 
     // Create heaps
-    ctx->heap_uniforms = gpu_heap_create(
+    ctx->heap_ubo_ssbo = gpu_heap_create(
             ctx->device.handle, 
             ctx->physicalDevice.selected->handle, 
             &ctx->physicalDevice.selected->memory_props, 
             MB(16), 
-            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     ctx->heap_staging = gpu_heap_create(
             ctx->device.handle, 
@@ -606,14 +606,19 @@ vulkan_state_t* init_rendering(
         {
             .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
             .descriptorCount = ctx->render_state.frames_in_flight * desc_limit
+        },
+        {
+            .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .descriptorCount = ctx->render_state.frames_in_flight * desc_limit
         }
     };
     VkDescriptorPoolCreateInfo pool_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        .maxSets = ctx->render_state.frames_in_flight * desc_limit,
-        .poolSizeCount = 1,
+        .maxSets = LEN(pool_sizes) * ctx->render_state.frames_in_flight * desc_limit,
+        .poolSizeCount = LEN(pool_sizes),
         .pPoolSizes = pool_sizes
     };
+
     res = vkCreateDescriptorPool(ctx->device.handle, &pool_info, NULL, &ctx->descriptor_pool_permanent);
     assert(res == VK_SUCCESS);
 
@@ -622,7 +627,7 @@ vulkan_state_t* init_rendering(
         // buffer and mapping
         state->ubo_global = alloc_array(arena_permanent, gpu_alloc_t, ctx->render_state.frames_in_flight);
         for (u32 i = 0; i < ctx->render_state.frames_in_flight; i++) {
-            state->ubo_global[i] = gpu_heap_alloc(&ctx->heap_uniforms, sizeof(UBO_global_t));
+            state->ubo_global[i] = gpu_heap_alloc(&ctx->heap_ubo_ssbo, sizeof(UBO_global_t));
         }
 
         // descriptor set
@@ -665,7 +670,7 @@ vulkan_state_t* init_rendering(
         }
         vkUpdateDescriptorSets(ctx->device.handle, ctx->render_state.frames_in_flight, writes, 0, NULL);
     }
-    state->terrain = terrain_init(arena_permanent, arena_scratch, ctx, state->ubo_global_descriptor_set_layout, vert_shader, frag_shader);
+    terrain_init(&state->terrain, arena_permanent, arena_scratch, ctx, state->ubo_global_descriptor_set_layout, vert_shader, frag_shader);
     return state;
 }
 
@@ -756,40 +761,10 @@ void render(vulkan_state_t* vulkan_state, game_state_t* game_state, float time) 
     };
     vkCmdBeginRenderPass(cmdBuf, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-    // Draw terrain
-    terrain_gpu_t* terrain = &vulkan_state->terrain;
-    vkCmdBindPipeline(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, vulkan_state->terrain.pipeline.handle);
-    // dynamic states
-    VkViewport viewport = {
-        .x = 0.0f,
-        .y = 0.0f,
-        .width  = ctx->physicalDevice.selected->surfaceCapabilities.currentExtent.width,
-        .height = ctx->physicalDevice.selected->surfaceCapabilities.currentExtent.height,
-        .minDepth = 0.0f,
-        .maxDepth = 1.0f
-    };
-    vkCmdSetViewport(cmdBuf, 0, 1, &viewport);
+    terrain_render(&vulkan_state->ctx, game_state, &vulkan_state->terrain, cmdBuf, vulkan_state->ubo_global_descriptor_sets[frame], frame);
 
-    VkRect2D scissor = {
-        .offset = {0, 0},
-        .extent = ctx->physicalDevice.selected->surfaceCapabilities.currentExtent
-    };
+    // TODO: render other things here
 
-    VkDescriptorSet sets[] = {vulkan_state->ubo_global_descriptor_sets[frame], vulkan_state->terrain.pipeline.descriptor_sets[frame]};
-    vkCmdBindDescriptorSets(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, terrain->pipeline.layout, 0, LEN(sets), sets, 0,  NULL);
-
-    // patch geometry
-    vkCmdSetScissor(cmdBuf, 0, 1, &scissor);
-    VkBuffer vertex_buffers[] = {terrain->gpu_mem_vertices.heap->buffer};
-    VkDeviceSize offsets[] = {0};
-    vkCmdBindVertexBuffers(cmdBuf, 0, 1, vertex_buffers, offsets);
-    //for (u32 i = 0; i < 9; i++) {
-    //    u64 index_offset = terrain->mem_mesh_index_buffer_offset[i];
-    //    vkCmdBindIndexBuffer(cmdBuf, terrain->buffer, index_offset, VK_INDEX_TYPE_UINT16);
-    //    vkCmdDrawIndexed(cmdBuf, terrain->n_indices, terrain->, 0, 0, 0);
-    //}
-    vkCmdBindIndexBuffer(cmdBuf, terrain->gpu_mem_indices.heap->buffer, terrain->gpu_mem_indices.offset, VK_INDEX_TYPE_UINT16);
-    vkCmdDrawIndexed(cmdBuf, terrain->n_indices, 1, 0, 0, 0);
     vkCmdEndRenderPass(cmdBuf);
     res = vkEndCommandBuffer(cmdBuf);
     assert(res == VK_SUCCESS);

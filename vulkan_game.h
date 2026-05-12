@@ -45,10 +45,6 @@ typedef struct LogicalDevice {
 typedef struct {
     VkPipeline handle;
     VkPipelineLayout layout;
-    VkDescriptorSetLayout descriptor_set_layout;
-    VkDescriptorSet* descriptor_sets; // per frame
-    // offset per frame 
-    gpu_alloc_t* uniforms;
 } pipeline_t;
 
 typedef struct {
@@ -82,7 +78,7 @@ typedef struct VulkanCtx {
     // pools
     VkDescriptorPool descriptor_pool_permanent;
     // Heaps
-    gpu_heap_t heap_uniforms;
+    gpu_heap_t heap_ubo_ssbo;
     gpu_heap_t heap_staging;
     gpu_heap_t heap_local_mesh;
 
@@ -103,14 +99,20 @@ typedef struct {
     u32 mem_mesh_index_buffer_offset[9];
     u32 n_indices;
     u32 n_vertices;
+
     pipeline_t pipeline;
+    VkDescriptorSetLayout descriptor_set_layout;
+    // offset per frame 
+    VkDescriptorSet* descriptor_sets;
+    gpu_alloc_t* ubo_noise;
+    gpu_alloc_t* ssbo_instance_data;
 } terrain_gpu_t;
 
 typedef struct {
     u32 some_int;
     u32 other_int;
     // terrain uniform data
-} UBO_terrain_t;
+} UBO_terrain_noise_t;
 
 typedef struct {
     VulkanCtx ctx;

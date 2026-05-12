@@ -228,7 +228,6 @@ int main(int argc, char** argv) {
                 &xi.eventBase,
                 &xi.errorBase));
     int major = 2, minor = 0;
-
     assert(XIQueryVersion(display, &major, &minor) == Success);
 
     unsigned char mask[XIMaskLen(XI_RawMotion)] = {0};
@@ -279,13 +278,12 @@ int main(int argc, char** argv) {
 
     // Game Loop
 
-    VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
     XEvent e;
     u64 start_time = get_time_ns();
     u64 curr_time = start_time;
 
     game_state_t game_state;
-    game_state.main_camera = camera_looking_at_from((vec3){0.5f,0,0.5f}, (vec3){2,2,2});
+    game_state.main_camera = camera_looking_at_from((vec3){1.0f,1,0}, (vec3){0,1,0});
     game_state.camera_speed = vec3_zero;
     game_state.current_subdiv = 1;
     float delta_time = 0;
@@ -294,7 +292,7 @@ int main(int argc, char** argv) {
 update_start:
     while(running) {
         u64 new_time = get_time_ns();
-        float delta_time = ((float)(new_time - curr_time)/ 1000000000ull);
+        delta_time = ((float)(new_time - curr_time)/ 1000000000ull);
         curr_time = new_time; 
         float time = ((float)(curr_time - start_time)/ 1000000000ull);
 #ifdef ENABLE_HOT_RELOAD

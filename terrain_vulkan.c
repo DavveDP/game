@@ -1,30 +1,72 @@
 #include <mesh.c> // plane subdivision
 // Rendering
 
-pipeline_t terrain_create_pipeline(
+#define TERRAIN_MAX_INSTANCES 4096
+#define GRID_SIZE 16000
+#define TERRAIN_MAX_Y 1000
+#define LOD_COUNT 8
+
+typedef struct {
+    float min_lod_dist;
+    float k;
+} lod_to_dist_params_t;
+
+typedef struct {
+    float x, y;
+    float size;
+    u8 buf_index;
+    // padding...
+} terrain_instance_data_t;
+
+static inline float lod_to_sq_dist(u8 lod, const lod_to_dist_params_t* p) {
+    float d = p->min_lod_dist * (1 - powf((float)lod / LOD_COUNT, p->k));
+    return d*d;
+}
+
+static float lod_to_sq_dist_quantized_g[LOD_COUNT];
+
+void lod_to_sq_dist_set_params(const lod_to_dist_params_t* params) {
+    for (u8 i = 0; i < LOD_COUNT; i++) {
+        lod_to_sq_dist_quantized_g[i] = lod_to_sq_dist(i, params);
+    }
+}
+
+void terrain_init(
+        terrain_gpu_t* terrain,
         arena_t* arena_permanent, 
         arena_t* arena_scratch, 
         VulkanCtx* ctx, 
-        VkDescriptorSetLayout ubo_global_descriptor_set_layout,
-        file_data_t vert_shader,
+        VkDescriptorSetLayout ubo_global_descriptor_set_layout, 
+        file_data_t vert_shader, 
         file_data_t frag_shader) 
 {
-    pipeline_t pipeline;
-    VkResult res;
-
     // alloc uniform buffer (one for each frame)
-    pipeline.uniforms = alloc_array(arena_permanent, gpu_alloc_t, ctx->render_state.frames_in_flight);
+    terrain->ubo_noise = alloc_array(arena_permanent, gpu_alloc_t, ctx->render_state.frames_in_flight);
     for (u32 i = 0; i < ctx->render_state.frames_in_flight; i++) {
-        pipeline.uniforms[i] = gpu_heap_alloc(&ctx->heap_uniforms, sizeof(UBO_terrain_t));
+        terrain->ubo_noise[i] = gpu_heap_alloc(&ctx->heap_ubo_ssbo, sizeof(UBO_terrain_noise_t));
+    }
+    // alloc instance data buffer
+    terrain->ssbo_instance_data = alloc_array(arena_permanent, gpu_alloc_t, ctx->render_state.frames_in_flight);
+    for (u32 i = 0; i < ctx->render_state.frames_in_flight; i++) {
+        terrain->ssbo_instance_data[i] = gpu_heap_alloc(&ctx->heap_ubo_ssbo, sizeof(terrain_instance_data_t) * TERRAIN_MAX_INSTANCES);
     }
 
+    VkResult res;
     // descriptor sets
-    pipeline.descriptor_sets = alloc_array(arena_permanent, VkDescriptorSet, ctx->render_state.frames_in_flight);
+    terrain->descriptor_sets = alloc_array(arena_permanent, VkDescriptorSet, ctx->render_state.frames_in_flight);
     {
         VkDescriptorSetLayoutBinding bindings[] = {
+            // noise
             {
                 .binding = 0, // terrain specific
                 .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_VERTEX_BIT
+            },
+            // instance data
+            {
+                .binding = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                 .descriptorCount = 1,
                 .stageFlags = VK_SHADER_STAGE_VERTEX_BIT
             }
@@ -36,37 +78,55 @@ pipeline_t terrain_create_pipeline(
             .pBindings = bindings
         };
 
-        res = vkCreateDescriptorSetLayout(ctx->device.handle, &layoutInfo, NULL, &pipeline.descriptor_set_layout);
+        res = vkCreateDescriptorSetLayout(ctx->device.handle, &layoutInfo, NULL, &terrain->descriptor_set_layout);
         assert(res == VK_SUCCESS);
 
         allocate_descriptor_sets(arena_scratch, 
                 ctx->device.handle, 
                 ctx->descriptor_pool_permanent, 
-                pipeline.descriptor_set_layout, 
+                terrain->descriptor_set_layout, 
                 ctx->render_state.frames_in_flight, 
-                pipeline.descriptor_sets);
+                terrain->descriptor_sets);
 
         // fill in descriptor set (table) with info about which buffer to use, offset and range 
         // (should obviously match the layout binding that we will put in the pipeline)
         for (int i = 0; i < ctx->render_state.frames_in_flight; i++) {
-            VkDescriptorBufferInfo bufferInfo = {
-                .buffer = pipeline.uniforms[i].heap->buffer,
-                .offset = pipeline.uniforms[i].offset,
-                .range = sizeof(UBO_terrain_t)
+            VkDescriptorBufferInfo ubo_buffer_info = {
+                .buffer = terrain->ubo_noise[i].heap->buffer,
+                .offset = terrain->ubo_noise[i].offset,
+                .range = sizeof(UBO_terrain_noise_t)
             };
-            VkWriteDescriptorSet descriptorWrite = {
-                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .dstSet = pipeline.descriptor_sets[i],
-                .dstBinding = 0,
-                .dstArrayElement = 0,
-                .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                .descriptorCount = 1,
-                .pBufferInfo = &bufferInfo
+            VkDescriptorBufferInfo ssbo_buffer_info = {
+                .buffer = terrain->ssbo_instance_data[i].heap->buffer,
+                .offset = terrain->ssbo_instance_data[i].offset,
+                .range = VK_WHOLE_SIZE
+            };
+            VkWriteDescriptorSet descriptor_writes[] = 
+            {
+                {
+                    .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    .dstSet = terrain->descriptor_sets[i],
+                    .dstBinding = 0,
+                    .dstArrayElement = 0,
+                    .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                    .descriptorCount = 1,
+                    .pBufferInfo = &ubo_buffer_info
+                },
+                {
+                    .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    .dstSet = terrain->descriptor_sets[i],
+                    .dstBinding = 1,
+                    .dstArrayElement = 0,
+                    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                    .descriptorCount = 1,
+                    .pBufferInfo = &ssbo_buffer_info
+                },
             };
             // TODO: check what copy params mean and if this can be outside loop in that case
-            vkUpdateDescriptorSets(ctx->device.handle, 1, &descriptorWrite, 0, NULL);
+            vkUpdateDescriptorSets(ctx->device.handle, LEN(descriptor_writes), descriptor_writes, 0, NULL);
         }
     }
+
     // create pipeline
     {
         // create shader stages
@@ -170,13 +230,13 @@ pipeline_t terrain_create_pipeline(
         };
 
         // Pipeline layout (descriptor sets)
-        VkDescriptorSetLayout layouts[] = {ubo_global_descriptor_set_layout, pipeline.descriptor_set_layout};
+        VkDescriptorSetLayout layouts[] = {ubo_global_descriptor_set_layout, terrain->descriptor_set_layout};
         VkPipelineLayoutCreateInfo pipelineLayoutInfo = {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
             .setLayoutCount = LEN(layouts),
             .pSetLayouts = layouts
         };
-        res = vkCreatePipelineLayout(ctx->device.handle, &pipelineLayoutInfo, NULL, &pipeline.layout);
+        res = vkCreatePipelineLayout(ctx->device.handle, &pipelineLayoutInfo, NULL, &terrain->pipeline.layout);
         assert(res == VK_SUCCESS);
 
         VkGraphicsPipelineCreateInfo pipelineInfo = {
@@ -193,11 +253,11 @@ pipeline_t terrain_create_pipeline(
             .pColorBlendState = &blendStateInfo,
             .pDynamicState = &dynamicStateInfo,
             // skipping dynamic state
-            .layout = pipeline.layout,
+            .layout = terrain->pipeline.layout,
             .renderPass = ctx->renderPass,
             .subpass = 0,
         };
-        res = vkCreateGraphicsPipelines(ctx->device.handle, NULL/*TODO:cache required*/, 1, &pipelineInfo, NULL, &pipeline.handle);
+        res = vkCreateGraphicsPipelines(ctx->device.handle, NULL/*TODO:cache required*/, 1, &pipelineInfo, NULL, &terrain->pipeline.handle);
         assert(res == VK_SUCCESS);
 
         // destroy shader modules once ctx->pipeline is created
@@ -205,90 +265,43 @@ pipeline_t terrain_create_pipeline(
             vkDestroyShaderModule(ctx->device.handle, stages[i].module, NULL);
         }
     }
-    return pipeline;
-}
 
-#define GRID_SIZE 16000
-#define TERRAIN_MAX_Y 1000
-#define LOD_COUNT 8
-
-typedef struct {
-    float min_lod_dist;
-    float k;
-} lod_to_dist_params_t;
-
-typedef struct {
-    float x, y;
-    float size;
-    u8 buf_index;
-    // padding...
-} terrain_instance_data_t;
-
-static inline float lod_to_dist(u8 lod, const lod_to_dist_params_t* p) {
-    return p->min_lod_dist * (1 - powf(lod / LOD_COUNT, p->k));
-}
-
-static float lod_to_dist_quantized_g[LOD_COUNT];
-
-void lod_to_dist_set_params(const lod_to_dist_params_t* params) {
-    for (u8 i = 0; i < LOD_COUNT; i++) {
-        lod_to_dist_quantized_g[i] = lod_to_dist(i, params);
-    }
-}
-
-terrain_gpu_t terrain_init(
-        arena_t* arena_permanent, 
-        arena_t* arena_scratch, 
-        VulkanCtx* ctx, 
-        VkDescriptorSetLayout ubo_global_descriptor_set_layout, 
-        file_data_t vert_shader, 
-        file_data_t frag_shader) 
-{
-    const lod_to_dist_params_t default_params = {
-        .min_lod_dist = GRID_SIZE/sqrtf(2),
-        .k = 3.0f
-    };
-    lod_to_dist_set_params(&default_params);
-
-    terrain_gpu_t terrain;
-    terrain.pipeline = terrain_create_pipeline(arena_permanent, arena_scratch, ctx, ubo_global_descriptor_set_layout, vert_shader, frag_shader);
     // allocate vertices
     {
-        mesh_subdiv_plane(5, NULL, 0, &terrain.n_vertices, NULL, &terrain.n_indices);
+        mesh_subdiv_plane(5, NULL, 0, &terrain->n_vertices, NULL, &terrain->n_indices);
 
         // allocate CPU temp buffers
-        Vertex_t* vertices = alloc_array(arena_scratch, Vertex_t, terrain.n_vertices);
-        u16* indices = alloc_array(arena_scratch, u16, terrain.n_indices);
+        Vertex_t* vertices = alloc_array(arena_scratch, Vertex_t, terrain->n_vertices);
+        u16* indices = alloc_array(arena_scratch, u16, terrain->n_indices);
 
         // generate mesh
-        mesh_subdiv_plane(5, &vertices->pos, sizeof(*vertices), &terrain.n_vertices, indices, &terrain.n_indices);
-        
-        // TODO: assign terrain.gpu_mem_index_buffer_offsets
+        mesh_subdiv_plane(5, &vertices->pos, sizeof(*vertices), &terrain->n_vertices, indices, &terrain->n_indices);
+
+        // TODO: assign terrain->gpu_mem_index_buffer_offsets
 
         // copy all data to staging so that layout is:
         // vertex, ib1, ib2, ...
-        u64 size_vertices = sizeof(*vertices) * terrain.n_vertices;
-        u64 size_indices = sizeof(*indices) * terrain.n_indices;
+        u64 size_vertices = sizeof(*vertices) * terrain->n_vertices;
+        u64 size_indices = sizeof(*indices) * terrain->n_indices;
 
         gpu_alloc_t staging_vertices = gpu_heap_alloc(&ctx->heap_staging, size_vertices);
         gpu_alloc_t staging_indices = gpu_heap_alloc_unaligned(&ctx->heap_staging, size_indices);
-        terrain.gpu_mem_vertices = gpu_heap_alloc(&ctx->heap_local_mesh, size_vertices);
-        terrain.gpu_mem_indices = gpu_heap_alloc_unaligned(&ctx->heap_local_mesh, size_indices);
+        terrain->gpu_mem_vertices = gpu_heap_alloc(&ctx->heap_local_mesh, size_vertices);
+        terrain->gpu_mem_indices = gpu_heap_alloc_unaligned(&ctx->heap_local_mesh, size_indices);
 
         memcpy(staging_vertices.mapped, vertices, size_vertices);
         memcpy(staging_indices.mapped, indices, size_indices);
 
         // upload
         staging_buffer_upload_t upload_info = {
-            .copyRegion = (VkBufferCopy){staging_vertices.offset, terrain.gpu_mem_vertices.offset, size_vertices + size_indices},
+            .copyRegion = (VkBufferCopy){staging_vertices.offset, terrain->gpu_mem_vertices.offset, size_vertices + size_indices},
             .src = staging_vertices.heap->buffer,
-            .dst = terrain.gpu_mem_vertices.heap->buffer
+            .dst = terrain->gpu_mem_vertices.heap->buffer
         };
         upload_staging_buffer(ctx, &upload_info);
     }
     gpu_heap_reset(&ctx->heap_staging);
     arena_reset(arena_scratch);
-    return terrain;
 }
 
 typedef struct {
@@ -339,9 +352,10 @@ static u8 fill_instance(qt_node node, vec2 camera_xz_pos, frustum_t* frustum, u8
 
     // check if centre of node is too far from the camera, given our LOD level(depth)
     float d = vec2_sq_dist(((vec2){node.x, node.z}), camera_xz_pos);
-    float min_dist_for_lod = lod_to_dist_quantized_g[lod];
+    float min_dist_for_lod = lod_to_sq_dist_quantized_g[lod];
     if (d >= min_dist_for_lod) {
-        assert(d < lod_to_dist_quantized_g[lod+1]); // otherwise we dropped 2 lod levels, breaking the invariant
+        assert(lod > 0);
+        assert(d < lod_to_sq_dist_quantized_g[lod-1]); // otherwise we dropped 2 lod levels, breaking the invariant
         return CHUNKED_LOD_RESULT_STOPPED;
     }
 
@@ -392,6 +406,12 @@ static u8 fill_instance(qt_node node, vec2 camera_xz_pos, frustum_t* frustum, u8
 }
 
 void terrain_fill_instance_data(camera_t* cam, terrain_instance_data_t* instance_data_buffer) {
+    const lod_to_dist_params_t default_params = {
+        .min_lod_dist = GRID_SIZE * sqrtf(2),
+        .k = 3.0f
+    };
+    lod_to_sq_dist_set_params(&default_params);
+
     vec2 fwd = vec2_normalized((vec2){cam->transform.pos.x, cam->transform.pos.z});
     float corner_x = fwd.x >= 0
         ? (floorf(cam->transform.pos.x / GRID_SIZE) + 1) * GRID_SIZE
@@ -410,4 +430,41 @@ void terrain_fill_instance_data(camera_t* cam, terrain_instance_data_t* instance
     instance_count = 0;
     instance_data_buffer_g = instance_data_buffer;
     fill_instance(root, (vec2){cam->transform.pos.x, cam->transform.pos.z}, &f, 0);
+}
+
+void terrain_render(VulkanCtx* ctx, game_state_t* game_state, terrain_gpu_t* terrain, VkCommandBuffer cmd_buf, VkDescriptorSet ubo_global_descriptor_set, u32 frame) {
+    //terrain_fill_instance_data(&game_state->main_camera, (terrain_instance_data_t*)terrain->ssbo_instance_data[frame].mapped);
+    // Draw terrain
+    vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, terrain->pipeline.handle);
+    // dynamic states
+    VkViewport viewport = {
+        .x = 0.0f,
+        .y = 0.0f,
+        .width  = ctx->physicalDevice.selected->surfaceCapabilities.currentExtent.width,
+        .height = ctx->physicalDevice.selected->surfaceCapabilities.currentExtent.height,
+        .minDepth = 0.0f,
+        .maxDepth = 1.0f
+    };
+    vkCmdSetViewport(cmd_buf, 0, 1, &viewport);
+
+    VkRect2D scissor = {
+        .offset = {0, 0},
+        .extent = ctx->physicalDevice.selected->surfaceCapabilities.currentExtent
+    };
+
+    VkDescriptorSet sets[] = {ubo_global_descriptor_set, terrain->descriptor_sets[frame]};
+    vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, terrain->pipeline.layout, 0, LEN(sets), sets, 0,  NULL);
+
+    // patch geometry
+    vkCmdSetScissor(cmd_buf, 0, 1, &scissor);
+    VkBuffer vertex_buffers[] = {terrain->gpu_mem_vertices.heap->buffer};
+    VkDeviceSize offsets[] = {0};
+    vkCmdBindVertexBuffers(cmd_buf, 0, 1, vertex_buffers, offsets);
+    //for (u32 i = 0; i < 9; i++) {
+    //    u64 index_offset = terrain->mem_mesh_index_buffer_offset[i];
+    //    vkCmdBindIndexBuffer(cmd_buf, terrain->buffer, index_offset, VK_INDEX_TYPE_UINT16);
+    //    vkCmdDrawIndexed(cmd_buf, terrain->n_indices, terrain->, 0, 0, 0);
+    //}
+    vkCmdBindIndexBuffer(cmd_buf, terrain->gpu_mem_indices.heap->buffer, terrain->gpu_mem_indices.offset, VK_INDEX_TYPE_UINT16);
+    vkCmdDrawIndexed(cmd_buf, terrain->n_indices, 1, 0, 0, 0);
 }
