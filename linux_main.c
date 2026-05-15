@@ -283,7 +283,7 @@ int main(int argc, char** argv) {
     u64 curr_time = start_time;
 
     game_state_t game_state;
-    game_state.main_camera = camera_looking_at_from((vec3){1.0f,1,0}, (vec3){0,1,0});
+    game_state.main_camera = camera_looking_at_from((vec3){1.0f,0,1.0f}, (vec3){0,0,0});
     game_state.camera_speed = vec3_zero;
     game_state.current_subdiv = 1;
     float delta_time = 0;

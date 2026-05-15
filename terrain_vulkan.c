@@ -405,26 +405,25 @@ static u8 fill_instance(qt_node node, vec2 camera_xz_pos, frustum_t* frustum, u8
     return CHUNKED_LOD_RESULT_SUBDIVIDED;
 }
 
+#include <stdio.h>
+
 void terrain_fill_instance_data(camera_t* cam, terrain_instance_data_t* instance_data_buffer) {
     const lod_to_dist_params_t default_params = {
-        .min_lod_dist = GRID_SIZE * sqrtf(2),
+        .min_lod_dist = GRID_SIZE * (sqrtf(2) + 0.01f),
         .k = 3.0f
     };
     lod_to_sq_dist_set_params(&default_params);
 
-    vec2 fwd = vec2_normalized((vec2){cam->transform.pos.x, cam->transform.pos.z});
-    float corner_x = fwd.x >= 0
-        ? (floorf(cam->transform.pos.x / GRID_SIZE) + 1) * GRID_SIZE
-        : (floorf(cam->transform.pos.x / GRID_SIZE)    ) * GRID_SIZE;
-    float corner_z = fwd.y >= 0
-        ? (floorf(cam->transform.pos.z / GRID_SIZE) + 1) * GRID_SIZE
-        : (floorf(cam->transform.pos.z / GRID_SIZE)    ) * GRID_SIZE;
+    // snap pos to grid, ie round
+    float corner_x = floorf(cam->transform.pos.x / GRID_SIZE + 0.5f) * GRID_SIZE;
+    float corner_z = floorf(cam->transform.pos.z / GRID_SIZE + 0.5f) * GRID_SIZE;
 
     qt_node root = {
         .size = GRID_SIZE * 2,
         .x = corner_x, 
         .z = corner_z
     };
+    printf("qt root: %f, %f\n", root.x, root.z);
 
     frustum_t f = camera_get_frustum(cam);
     instance_count = 0;
@@ -433,7 +432,7 @@ void terrain_fill_instance_data(camera_t* cam, terrain_instance_data_t* instance
 }
 
 void terrain_render(VulkanCtx* ctx, game_state_t* game_state, terrain_gpu_t* terrain, VkCommandBuffer cmd_buf, VkDescriptorSet ubo_global_descriptor_set, u32 frame) {
-    //terrain_fill_instance_data(&game_state->main_camera, (terrain_instance_data_t*)terrain->ssbo_instance_data[frame].mapped);
+    terrain_fill_instance_data(&game_state->main_camera, (terrain_instance_data_t*)terrain->ssbo_instance_data[frame].mapped);
     // Draw terrain
     vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, terrain->pipeline.handle);
     // dynamic states

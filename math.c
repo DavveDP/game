@@ -55,6 +55,7 @@ vec4 vec4_sub(vec4 a, vec4 b) { return (vec4){a.x - b.x, a.y - b.y, a.z - b.z, a
 
 vec2 vec2_scale(vec2 a, float t) { return (vec2){a.x * t, a.y * t}; }
 vec3 vec3_scale(vec3 a, float t) { return (vec3){a.x * t, a.y * t, a.z * t}; }
+vec4 vec4_scale(vec4 a, float t) { return (vec4){a.x * t, a.y * t, a.z * t, a.w * t}; }
 
 vec3 vec3_neg(vec3 a) { return (vec3){-a.x, -a.y, -a.z}; }
 
@@ -114,7 +115,7 @@ const mat4 mat4_identity = { .m11 = 1.0f, .m22 = 1.0f, .m33 = 1, .m44 = 1 };
 void mat4_print(mat4* m, int(*fp)(const char*, ...)) {
     for (int i = 0; i < 4; i++) {
         for (int j = 0; j < 4; j++) {
-            fp("%f ", m->raw[j * 4 + i]);
+            fp("%f ", m->raw[j * 4 + i]); // index column major
         }
         fp("\n");
     }
@@ -147,15 +148,15 @@ mat4 mat4_transposed(const mat4* A) {
 mat4 mat4_mul(const mat4* A, const mat4* B) {
     mat4 A_T = mat4_transposed(A);
     mat4 C;
-    C.m11 = vec4_dot(A->c1, B->c1); C.m21 = vec4_dot(A->c1, B->c2);
-    C.m12 = vec4_dot(A->c2, B->c1); C.m22 = vec4_dot(A->c2, B->c2);
-    C.m13 = vec4_dot(A->c3, B->c1); C.m23 = vec4_dot(A->c3, B->c2);
-    C.m14 = vec4_dot(A->c4, B->c1); C.m24 = vec4_dot(A->c4, B->c2);
+    C.m11 = vec4_dot(A_T.c1, B->c1); C.m21 = vec4_dot(A_T.c2, B->c1);
+    C.m12 = vec4_dot(A_T.c1, B->c2); C.m22 = vec4_dot(A_T.c2, B->c2);
+    C.m13 = vec4_dot(A_T.c1, B->c3); C.m23 = vec4_dot(A_T.c2, B->c3);
+    C.m14 = vec4_dot(A_T.c1, B->c4); C.m24 = vec4_dot(A_T.c2, B->c4);
 
-    C.m31 = vec4_dot(A->c1, B->c3); C.m41 = vec4_dot(A->c1, B->c4);
-    C.m32 = vec4_dot(A->c2, B->c3); C.m42 = vec4_dot(A->c2, B->c4);
-    C.m33 = vec4_dot(A->c3, B->c3); C.m43 = vec4_dot(A->c3, B->c4);
-    C.m34 = vec4_dot(A->c4, B->c3); C.m44 = vec4_dot(A->c4, B->c4);
+    C.m31 = vec4_dot(A_T.c3, B->c1); C.m41 = vec4_dot(A_T.c4, B->c1);
+    C.m32 = vec4_dot(A_T.c3, B->c2); C.m42 = vec4_dot(A_T.c4, B->c2);
+    C.m33 = vec4_dot(A_T.c3, B->c3); C.m43 = vec4_dot(A_T.c4, B->c3);
+    C.m34 = vec4_dot(A_T.c3, B->c4); C.m44 = vec4_dot(A_T.c4, B->c4);
     return C;
 }
 

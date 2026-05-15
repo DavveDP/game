@@ -725,7 +725,7 @@ void render(vulkan_state_t* vulkan_state, game_state_t* game_state, float time) 
         // recompute projection based on screen size
         float aspect = (float)ctx->physicalDevice.selected->surfaceCapabilities.currentExtent.width / 
             ctx->physicalDevice.selected->surfaceCapabilities.currentExtent.height;
-        float fov_rads = PI/4;
+        float fov_rads = PI/2;
         game_state->main_camera.proj = mat4_perspective(fov_rads, aspect, 0.1f, 100.0f);
 
         // camera

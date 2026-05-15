@@ -69,20 +69,33 @@ frustum_t camera_get_frustum(camera_t* cam) {
     f.plane_right  = vec4_sub(M_T.c4, M_T.c1);
     f.plane_bottom = vec4_add(M_T.c4, M_T.c2);
     f.plane_top    = vec4_sub(M_T.c4, M_T.c2);
-    f.plane_near   = vec4_add(M_T.c4, M_T.c3);
-    f.plane_far    = vec4_sub(M_T.c4, M_T.c3);
+    f.plane_near   = vec4_scale(M_T.c3, -1.0f); // vulkan [0,1] clip range
+    f.plane_far    = vec4_scale(vec4_sub(M_T.c4, M_T.c3), -1.0f);
+
+    for (u32 i = 0; i < LEN(f.planes); i++) {
+        vec3 n = {f.planes[i].x, f.planes[i].y, f.planes[i].z };
+        float len = vec3_magnitude(n);
+        assert(len > 0.0f);
+        f.planes[i].x /= len;
+        f.planes[i].y /= len;
+        f.planes[i].z /= len;
+        f.planes[i].w /= len;
+    }
+
     return f;
 }
 
 bool frustum_intersects_aabb(frustum_t* f, aabb_t* box) {
     for (u32 i = 0; i < LEN(f->planes); i++) {
-        vec4 positive;
-        positive.x = (f->planes[i].x >= 0) ? box->xmax : box->xmin;
-        positive.y = (f->planes[i].y >= 0) ? box->ymax : box->ymin;
-        positive.z = (f->planes[i].z >= 0) ? box->zmax : box->zmin;
-        positive.w = 1.0f;
+        vec3 n = {f->planes[i].x, f->planes[i].y, f->planes[i].z };
+
+        vec3 positive = {
+            .x = (n.x >= 0) ? box->xmax : box->xmin,
+            .y = (n.y >= 0) ? box->ymax : box->ymin,
+            .z = (n.z >= 0) ? box->zmax : box->zmin
+        };
         // behind plane -> outside
-        if (vec4_dot(f->planes[i], positive) < 0) { 
+        if (vec3_dot(n, positive) + f->planes[i].w < -0.01f) { 
             return false;
         }
     }
