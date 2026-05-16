@@ -23,7 +23,7 @@ typedef int8_t  i8;
 
 #define RUN_EVERY(Call, Freq, Delta)                       \
     do {                                                   \
-        static u64 UNIQUE(__acc) = 0;                     \
+        static double UNIQUE(__acc) = 0;                     \
         if (UNIQUE(__acc) >= (Freq)) {                     \
             Call;                                          \
             UNIQUE(__acc) = 0;                             \

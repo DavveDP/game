@@ -27,12 +27,12 @@ void main_camera_movement(input_t* input, game_state_t* game_state, float delta_
     transform_t* cam_trans = &game_state->main_camera.transform;
     // camera move
     vec3* speed = &game_state->camera_speed;
-    const float max_speed = 3.0f;
+    const float max_speed = 50.0f;
     vec3 target_velocity = vec3_scale(camera_acceleration, max_speed);
     //vec3_print(target_velocity, printf);
 
     // exponential smoothing toward target
-    float responsiveness = 10.0f;
+    float responsiveness = 100.0f;
     *speed = vec3_lerp(*speed, target_velocity, 1.0f - expf(-responsiveness * delta_time));
     const float dead_zone = 2e-2f;
     if (vec3_sq_magnitude(*speed) < dead_zone * dead_zone) {

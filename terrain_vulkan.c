@@ -1,8 +1,13 @@
 #include <mesh.c> // plane subdivision
 // Rendering
 
+typedef struct {
+    vec3 pos;
+} terrain_vertex_t;
+
+
 #define TERRAIN_MAX_INSTANCES 4096
-#define GRID_SIZE 16000
+#define GRID_SIZE 256
 #define TERRAIN_MAX_Y 1000
 #define LOD_COUNT 8
 
@@ -12,7 +17,7 @@ typedef struct {
 } lod_to_dist_params_t;
 
 typedef struct {
-    float x, y;
+    float x, z;
     float size;
     u8 buf_index;
     // padding...
@@ -148,17 +153,11 @@ void terrain_init(
 
         // vertex input (single vertex buffer)
         VkVertexInputBindingDescription vertexBindings[] = {
-            { .binding = 0, .stride = sizeof(Vertex_t), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX }
+            { .binding = 0, .stride = sizeof(terrain_vertex_t), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX }
         };
 
-        //VkVertexInputAttributeDescription vertexAttr[] = {
-        //    { .location = 0, .binding = 0, .format = VK_FORMAT_R32G32B32_SFLOAT, .offset = offsetof(Vertex_t, pos)    },
-        //    { .location = 1, .binding = 0, .format = VK_FORMAT_R32G32B32_SFLOAT, .offset = offsetof(Vertex_t, normal) },
-        //    { .location = 2, .binding = 0, .format = VK_FORMAT_R32G32_SFLOAT,    .offset = offsetof(Vertex_t, uv)     },
-        //};
-        // placeholder
         VkVertexInputAttributeDescription vertexAttr[] = {
-            { .location = 0, .binding = 0, .format = VK_FORMAT_R32G32B32_SFLOAT,    .offset = offsetof(Vertex_t, pos)     }
+            { .location = 0, .binding = 0, .format = VK_FORMAT_R32G32B32_SFLOAT,    .offset = offsetof(terrain_vertex_t, pos)     }
         };
 
         VkPipelineVertexInputStateCreateInfo vertexInputInfo = {
@@ -271,11 +270,17 @@ void terrain_init(
         mesh_subdiv_plane(5, NULL, 0, &terrain->n_vertices, NULL, &terrain->n_indices);
 
         // allocate CPU temp buffers
-        Vertex_t* vertices = alloc_array(arena_scratch, Vertex_t, terrain->n_vertices);
+        terrain_vertex_t* vertices = alloc_array(arena_scratch, terrain_vertex_t, terrain->n_vertices);
         u16* indices = alloc_array(arena_scratch, u16, terrain->n_indices);
 
         // generate mesh
         mesh_subdiv_plane(5, &vertices->pos, sizeof(*vertices), &terrain->n_vertices, indices, &terrain->n_indices);
+
+        // shift all vertices from xz [0-1] to xz [-0.5, 0.5] so that it matches quadtree node center
+        for (u32 i = 0; i < terrain->n_vertices; i++) {
+            vertices[i].pos.x -= 0.5f;
+            vertices[i].pos.z -= 0.5f;
+        }
 
         // TODO: assign terrain->gpu_mem_index_buffer_offsets
 
@@ -309,20 +314,22 @@ typedef struct {
     float x, z;
 } qt_node;
 
-static u32 instance_count;
+static u32 instance_count_g;
 static terrain_instance_data_t* instance_data_buffer_g;
 
 static inline void output_instance(qt_node node, u8 buf_index) {
-    instance_data_buffer_g[instance_count].x = node.x;
-    instance_data_buffer_g[instance_count].y = node.x;
-    instance_data_buffer_g[instance_count].size = node.size;
-    instance_data_buffer_g[instance_count].buf_index = buf_index;
-    instance_count++;
+    instance_data_buffer_g[instance_count_g].x = node.x;
+    instance_data_buffer_g[instance_count_g].z = node.z;
+    instance_data_buffer_g[instance_count_g].size = node.size;
+    instance_data_buffer_g[instance_count_g].buf_index = buf_index;
+    instance_count_g++;
 }
 
 // 0, not visible
 // 1, visible but not subdivided further
 // 2, visible and subdivided
+
+#include <stdio.h>
 
 typedef enum {
     CHUNKED_LOD_RESULT_CULLED,
@@ -342,22 +349,28 @@ static u8 fill_instance(qt_node node, vec2 camera_xz_pos, frustum_t* frustum, u8
         .zmax = node.z + node.size/2,
     };
 
-    if (!frustum_intersects_aabb(frustum, &aabb)) {
-        return CHUNKED_LOD_RESULT_CULLED; // culled
-    }
+    //if (!frustum_intersects_aabb(frustum, &aabb)) {
+    //    return CHUNKED_LOD_RESULT_CULLED; // culled
+    //}
 
     if (lod == LOD_COUNT - 1) {
         return CHUNKED_LOD_RESULT_STOPPED;
     }
 
+
     // check if centre of node is too far from the camera, given our LOD level(depth)
     float d = vec2_sq_dist(((vec2){node.x, node.z}), camera_xz_pos);
+
+    //printf("%f %f %f %f\n", aabb.xmin, aabb.xmax, aabb.zmin, aabb.zmax);
+    //printf("lod: %hhu, d: %f, comparing to: %f\n", lod, sqrtf(d), sqrtf(lod_to_sq_dist_quantized_g[lod]));
     float min_dist_for_lod = lod_to_sq_dist_quantized_g[lod];
     if (d >= min_dist_for_lod) {
         assert(lod > 0);
-        assert(d < lod_to_sq_dist_quantized_g[lod-1]); // otherwise we dropped 2 lod levels, breaking the invariant
+        //printf("lod: %hhu, d: %f, quant: %f, prev: %f\n", lod, sqrtf(d), sqrtf(lod_to_sq_dist_quantized_g[lod]), sqrtf(lod_to_sq_dist_quantized_g[lod-1]));
+        //assert(d < lod_to_sq_dist_quantized_g[lod-1]); // otherwise we dropped 2 lod levels, breaking the invariant
         return CHUNKED_LOD_RESULT_STOPPED;
     }
+    
 
     // recurse 4 children
 
@@ -410,9 +423,14 @@ static u8 fill_instance(qt_node node, vec2 camera_xz_pos, frustum_t* frustum, u8
 void terrain_fill_instance_data(camera_t* cam, terrain_instance_data_t* instance_data_buffer) {
     const lod_to_dist_params_t default_params = {
         .min_lod_dist = GRID_SIZE * (sqrtf(2) + 0.01f),
-        .k = 3.0f
+        .k = 0.35f
     };
     lod_to_sq_dist_set_params(&default_params);
+    //printf("LOD distances\n");
+    //for (u32 i = 0; i < LOD_COUNT; i++) {
+    //    printf("%f ", sqrtf(lod_to_sq_dist_quantized_g[i]));
+    //}
+    //printf("\n");
 
     // snap pos to grid, ie round
     float corner_x = floorf(cam->transform.pos.x / GRID_SIZE + 0.5f) * GRID_SIZE;
@@ -423,10 +441,10 @@ void terrain_fill_instance_data(camera_t* cam, terrain_instance_data_t* instance
         .x = corner_x, 
         .z = corner_z
     };
-    printf("qt root: %f, %f\n", root.x, root.z);
+    //printf("qt root: %f, %f\n", root.x, root.z);
 
     frustum_t f = camera_get_frustum(cam);
-    instance_count = 0;
+    instance_count_g = 0;
     instance_data_buffer_g = instance_data_buffer;
     fill_instance(root, (vec2){cam->transform.pos.x, cam->transform.pos.z}, &f, 0);
 }
@@ -465,5 +483,5 @@ void terrain_render(VulkanCtx* ctx, game_state_t* game_state, terrain_gpu_t* ter
     //    vkCmdDrawIndexed(cmd_buf, terrain->n_indices, terrain->, 0, 0, 0);
     //}
     vkCmdBindIndexBuffer(cmd_buf, terrain->gpu_mem_indices.heap->buffer, terrain->gpu_mem_indices.offset, VK_INDEX_TYPE_UINT16);
-    vkCmdDrawIndexed(cmd_buf, terrain->n_indices, 1, 0, 0, 0);
+    vkCmdDrawIndexed(cmd_buf, terrain->n_indices, instance_count_g, 0, 0, 0);
 }

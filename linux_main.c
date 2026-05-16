@@ -35,7 +35,7 @@
 
 #ifdef ENABLE_HOT_RELOAD
     #define GAME_LIB_FILENAME "game.so"
-    #include <hot_reload.c>
+    #include <linux_hot_reload.c>
 #endif
 
 // Begin Platfrom specific code
@@ -282,8 +282,9 @@ int main(int argc, char** argv) {
     u64 start_time = get_time_ns();
     u64 curr_time = start_time;
 
+    // game init?
     game_state_t game_state;
-    game_state.main_camera = camera_looking_at_from((vec3){1.0f,0,1.0f}, (vec3){0,0,0});
+    game_state.main_camera = camera_looking_at_from((vec3){1.0f,0,1.0f}, (vec3){0,100,0});
     game_state.camera_speed = vec3_zero;
     game_state.current_subdiv = 1;
     float delta_time = 0;
@@ -296,7 +297,7 @@ update_start:
         curr_time = new_time; 
         float time = ((float)(curr_time - start_time)/ 1000000000ull);
 #ifdef ENABLE_HOT_RELOAD
-        //RUN_EVERY(hot_reload_sync(GAME_LIB_FILENAME, &game_api, &render_api), 30, delta_time);
+        RUN_EVERY(hot_reload_sync(GAME_LIB_FILENAME, &game_api, &render_api), 1.0f, delta_time);
 #endif
 
         // pump x events

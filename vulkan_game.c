@@ -279,10 +279,6 @@ VkShaderModule create_shader_module(VkDevice device, const u32* code, size_t cod
 
 // game data
 
-typedef struct Vertex_t {
-    vec3 pos;
-} Vertex_t;
-
 typedef struct {
     alignas(16) mat4 proj;
     alignas(16) mat4 view; // camera
@@ -726,7 +722,7 @@ void render(vulkan_state_t* vulkan_state, game_state_t* game_state, float time) 
         float aspect = (float)ctx->physicalDevice.selected->surfaceCapabilities.currentExtent.width / 
             ctx->physicalDevice.selected->surfaceCapabilities.currentExtent.height;
         float fov_rads = PI/2;
-        game_state->main_camera.proj = mat4_perspective(fov_rads, aspect, 0.1f, 100.0f);
+        game_state->main_camera.proj = mat4_perspective(fov_rads, aspect, 0.1f, 1000.0f);
 
         // camera
         uniform->proj = game_state->main_camera.proj;

@@ -12,6 +12,17 @@ layout(set = 1, binding = 0) uniform UBO_Terrain {
     uint b;
 } ubo_terrain;
 
+struct InstanceData {
+    float x;
+    float z;
+    float size;
+    uint buf_index;
+};
+
+layout(set = 1, binding = 1) readonly buffer InstanceBuffer {
+    InstanceData instances[];
+};
+
 float rand(float x)
 {
     return fract(sin(x * 2.9898)) * 43758.5453;
@@ -41,11 +52,16 @@ void main() {
     // random displacement
     //float rand = sin(gl_VertexIndex);
     float rand = rand(gl_VertexIndex + ubo_global.time) / 100000.0;
-    float offset = (rand + 0.5) * 0.2; // range ~[-0.005, 0.005]
+
+    InstanceData id = instances[gl_InstanceIndex];
+    vec2 patch_origin = vec2(id.x, id.z);           // patch origin is in the center of the patch
+    vec2 pos_xz = patch_origin + inPosition.xz * id.size; // assume model origin is also in the center of the geometry
+
+    //float offset = (rand + 0.5) * 0.2; // range ~[-0.005, 0.005]
     //float offset = 0.02 * sin(ubo_global.time + gl_VertexIndex);
 
     // projection
-    gl_Position = ubo_global.proj * ubo_global.view * vec4(100*inPosition, 1.0);
+    gl_Position = ubo_global.proj * ubo_global.view * vec4(pos_xz.x, 0, pos_xz.y, 1.0);
 
     //fragColor = vec3(inPosition.xz, .0);
     fragColor = vec3(0.2, 1.0, 0.2);
