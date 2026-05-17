@@ -35,18 +35,32 @@ void load_game_lib(int fd, game_api_t* game_api, render_api_t* render_api) {
 
 void hot_reload_sync(const char* path, game_api_t* game_api, render_api_t* render_api) {
     static struct stat prev = {0};
-
     printf("checking time\n");
-    int in = open(path, O_RDONLY);
-    assert(in > 0);
-    struct stat st;
-    fstat(in, &st);
 
-    if (st.st_mtime > prev.st_mtime && flock(in, LOCK_EX | LOCK_NB) == 0) {
-        flock(in, LOCK_UN);
+    struct stat st;
+    if (stat(path, &st) != 0) return;
+
+    if (st.st_mtime > prev.st_mtime) {
+        // Wait and re-stat to confirm the file size has settled
+        struct timespec rem = {0, 50000000};
+        int res;
+        do {
+            res = nanosleep(&rem, &rem);
+        }
+        while (res == -1);
+
+        struct stat st2;
+        if (stat(path, &st2) != 0) return;
+
+        if (st2.st_size != st.st_size || st2.st_mtime != st.st_mtime) {
+            printf("file still changing, skipping\n");
+            return; // Will retry next poll
+        }
+
         printf("reloading\n");
+        int in = open(path, O_RDONLY);
+        assert(in > 0);
         load_game_lib(in, game_api, render_api);
-        prev.st_mtime = st.st_mtime;
+        prev.st_mtime = st2.st_mtime;
     }
-    close(in);
 }

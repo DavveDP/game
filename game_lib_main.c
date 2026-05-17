@@ -9,6 +9,7 @@
 
 #include <alloc.c>
 #include <math.c> // links with math
+#include <algorithms.c>
 #include <transforms.c>
 #include <game.h>
 #include <game.c>

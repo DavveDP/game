@@ -64,8 +64,8 @@ float vec4_dot(vec4 a, vec4 b) { return a.x*b.x + a.y*b.y + a.z*b.z + a.w*b.w; }
 
 float vec2_sq_magnitude(vec2 a) { return a.x * a.x + a.y * a.y; }
 float vec3_sq_magnitude(vec3 a) { return a.x * a.x + a.y * a.y + a.z * a.z; }
-#define vec2_sq_dist(a, b) (vec2_sq_magnitude(vec2_sub(a, b)))
-#define vec3_sq_dist(a, b) (vec3_sq_magnitude(vec3_sub(a, b)))
+#define vec2_sq_dist(a, b) (vec2_sq_magnitude(vec2_sub((a), (b))))
+#define vec3_sq_dist(a, b) (vec3_sq_magnitude(vec3_sub((a), (b))))
 
 float vec2_magnitude(vec2 a) {
     float M = fmaxf(fabs(a.x), fabs(a.y));

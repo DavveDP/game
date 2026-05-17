@@ -682,7 +682,6 @@ void render(vulkan_state_t* vulkan_state, game_state_t* game_state, float time) 
     // wait for submission frame i - framesInFlight
     // means that semaphores and commandbuffers above are no longer in use by CPU
     vkWaitForFences(ctx->device.handle, 1, &fence, VK_TRUE, UINT64_MAX);
-    vkResetFences(ctx->device.handle, 1, &fence);
 
     // bookkeeping
     if (state->swapchain_cooldown > 0) state->swapchain_cooldown--;
@@ -710,6 +709,7 @@ void render(vulkan_state_t* vulkan_state, game_state_t* game_state, float time) 
         return;
     } else assert(res == VK_SUCCESS || res == VK_SUBOPTIMAL_KHR);
 
+    vkResetFences(ctx->device.handle, 1, &fence);
 
     // rendering begin
 

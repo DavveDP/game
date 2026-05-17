@@ -10,8 +10,7 @@ typedef enum {
     BTN_MOVE_RIGHT,
     BTN_MOVE_DOWN,
     BTN_MOVE_UP,
-    BTN_SUBDIV_INC,
-    BTN_SUBDIV_DEC,
+    BTN_FREEZE_TERRAIN,
     BTN_COUNT
 } BUTTON;
 
@@ -67,6 +66,7 @@ typedef struct {
     camera_t main_camera;
     vec3 camera_speed;
     u32 current_subdiv;
+    bool freeze_terrain;
 } game_state_t;
 
 typedef struct {

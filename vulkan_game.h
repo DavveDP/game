@@ -95,10 +95,9 @@ u32 window_width(VulkanCtx* ctx) {
 
 typedef struct {
     gpu_alloc_t gpu_mem_vertices;
-    gpu_alloc_t gpu_mem_indices;
-    u32 mem_mesh_index_buffer_offset[9];
-    u32 n_indices;
     u32 n_vertices;
+    gpu_alloc_t gpu_mem_indices[9];
+    u32 n_indices[9];
 
     pipeline_t pipeline;
     VkDescriptorSetLayout descriptor_set_layout;

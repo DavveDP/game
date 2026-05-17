@@ -16,6 +16,10 @@ typedef int8_t  i8;
 #define KB(n) (n * (1ull << 10))
 #define LEN(arr) (sizeof(arr) / sizeof(arr[0]))
 #define MIN(X, Y) (X) < (Y) ? (X) : (Y)
+#define MAX(X, Y) (X) > (Y) ? (X) : (Y)
+#define CLAMP(X, A, B) (MIN(MAX((A),(X)), (B)))
+#define ODD(X) ((X) & 1)
+#define EVEN(X) (ODD(X)^1)
 
 #define CONCAT_INNER(a, b) a##b
 #define CONCAT(a, b) CONCAT_INNER(a, b)

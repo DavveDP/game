@@ -1,3 +1,50 @@
+u32 mesh_generate_indices_stitched(u32 n, i32 stitched_row, i32 stitched_col, u16* indices) {
+        // generate indices
+    u32 i = 0;
+    i32 dx = 1;
+    i32 dy = n;
+    // tl -> br tris
+    for (i32 row = 0; row < n - 1; row++) {
+        // only does stitching on even rows
+        for (i32 col = ODD(row); col < n - 1; col+=2) {
+            u32 x = row * dy + col * dx;
+
+            //// 1
+            if (!(ODD(col) && col == stitched_col)) {
+                indices[i++] = x;
+                indices[i++] = x + (1 + (EVEN(row) && row == stitched_row)) * dx;
+                indices[i++] = x + dx + dy;
+            }
+
+            //// 2
+            if (!(ODD(row) && row == stitched_row)) {
+                indices[i++] = x;
+                indices[i++] = x + dx + dy;
+                indices[i++] = x + (1 + (EVEN(col) && col == stitched_col)) * dy;
+            }
+        }
+    }
+    // bl -> tr tris
+    for (u32 row = 0; row < n - 1; row++) {
+        // only does stitching on odd rows
+        for (u32 col = EVEN(row); col < n - 1; col+=2) {
+            u32 x = row * dy + col * dx;
+            //// 1
+            if (!(EVEN(row) && row == stitched_row) && !(EVEN(col) && col == stitched_col)) {
+                indices[i++] = x;
+                indices[i++] = x + dx;
+                indices[i++] = x + dy;
+            }
+
+            // 2
+            indices[i++] = x + dy;
+            indices[i++] = x + dx;
+            indices[i++] = x + (1 + (ODD(row) && row == stitched_row)) * dx + (1 + (ODD(col) && col == stitched_col)) * dy;
+        }
+    }
+    return i;
+}
+
 void mesh_subdiv_plane(u8 subdiv, void* vertices, u32 stride, u32* nvertices, u16* indices, u32* nindices) {
     assert(subdiv <= 7); // max index 16640, fits u16
     u32 n = (1 << subdiv) + 1;
@@ -50,43 +97,45 @@ void mesh_subdiv_plane(u8 subdiv, void* vertices, u32 stride, u32* nvertices, u1
     }
 }
 
-u32 remove_indices_containing(u16* indices, u32 nindices, u16 index) {
-    u32 shift = 0;
-    for (u32 i = 0; i < nindices; i++) {
-        indices[i-shift] = indices[i];
-        if (indices[i] == index) {
-            shift++;
-        }
+void mesh_create_chunked_lod_instances(u8 subdiv, u16* indices, u32* nindices) {
+    u32 n_first = 0;
+    mesh_subdiv_plane(subdiv, NULL, 0, NULL, indices, &n_first);
+
+    u32 n = (1 << subdiv) + 1;
+    u32 removed_per_side = (n / 2) * 3; // 3 indices per tri
+
+    if (nindices) { 
+        nindices[0] = n_first;
+        nindices[1] = nindices[2] = nindices[3] = nindices[4] = n_first - removed_per_side;
+        nindices[5] = nindices[6] = nindices[7] = nindices[8] = n_first - 2 * removed_per_side;
     }
-    return shift; // removed
+    if (indices == NULL) return;
+
+    u32 count = 0;
+    u32 acc = 0;
+    u16* p = indices + n_first; // first already generated for us
+
+    /* Index buffer layouts (0 normal indices, 1 stitched)
+     * 0    1    2    3    4    5    6    7    8
+     * 0 0  0 1  1 0  0 0  1 1  0 1  1 0  1 1  1 1
+     * 0 0  0 1  1 0  1 1  0 0  1 1  1 1  0 1  1 0
+     */
+
+    // rightmost col (n - 1)
+    nindices[1] = count = mesh_generate_indices_stitched(n,  -1, n-2, p += count);
+    // leftmost col (0)
+    nindices[2] = count = mesh_generate_indices_stitched(n,  -1,   0, p += count);
+    // bottommost row
+    nindices[3] = count = mesh_generate_indices_stitched(n, n-2,  -1, p += count);
+    // topmost row
+    nindices[4] = count = mesh_generate_indices_stitched(n,   0,  -1, p += count);
+    // br
+    nindices[5] = count = mesh_generate_indices_stitched(n, n-2, n-2, p += count);
+    // bl
+    nindices[6] = count = mesh_generate_indices_stitched(n, n-2,   0, p += count);
+    // tr
+    nindices[7] = count = mesh_generate_indices_stitched(n,   0, n-2, p += count);
+    // tl
+    nindices[8] = count = mesh_generate_indices_stitched(n,   0,   0, p += count);
 }
 
-//void mesh_create_index_buffer_permutations(u8 subdiv, u16* indices, u16* counts) {
-//    u32 n_triangles = (1 << (2 * subdiv + 1));
-//    u32 nindices = n_triangles * 3;
-//    u32 tris_to_remove_per_side = (subdiv * 2) * 2;
-//    counts[0] = counts[1] = counts[2] = counts[3] = nindices - tris_to_remove_per_side * 3;
-//    counts[4] = counts[5] = counts[6] = counts[7] = nindices - tris_to_remove_per_side * 2 * 3;
-//    if (indices == NULL) return;
-//
-//    u32 n = (1 << subdiv) + 1;
-//    u32 dx = 1;
-//    u32 dy = n;
-//
-//    u32 tl = 0;
-//    u32 tr = (n-1)*dx;
-//    u32 bl = (n-1)*dy;
-//    
-//    // top
-//    u16* p = indices;
-//    for (int c = 0; c < 8; c++) {
-//        mesh_subdiv_plane(subdiv, NULL, 0, NULL, p, nindices);
-//        u32 count = 0;
-//        u16 indices_to_remove[counts[c]];
-//        for (u32 i = 1; i < tr; i++) ir1[count++]; // parametrize this?
-//        for (u32 i = 0; i < count; i++) {
-//            remove_indices_containing(p, nindices, ir1[i]);
-//        }
-//        p += counts[0];
-//    }
-//}

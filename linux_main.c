@@ -1,5 +1,6 @@
 //#define _POSIX_C_SOURCE 199309L // required for clock_gettime
 #define _POSIX_C_SOURCE 200112L // required by readlink
+                                
 
 // Essentials from C stdlib
 #include <assert.h>
@@ -10,6 +11,7 @@
 
 #include <alloc.c>
 #include <math.c> // links with math
+#include <algorithms.c>
 #include <transforms.c>
 // My platform agnostic files
 
@@ -32,6 +34,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <stdio.h>
+#include <time.h>
 
 #ifdef ENABLE_HOT_RELOAD
     #define GAME_LIB_FILENAME "game.so"
@@ -44,7 +47,6 @@
 #include <sys/mman.h>
 #include <libgen.h>
 #include <signal.h>
-#include <time.h>
 #include <X11/Xlib.h>
 #include <X11/XKBlib.h>
 #include <X11/extensions/XInput2.h>
@@ -97,6 +99,7 @@ enum X11_KEY_CODES_t {
     X11_KEY_CODE_A = 38,
     X11_KEY_CODE_S = 39,
     X11_KEY_CODE_D = 40,
+    X11_KEY_CODE_F = 41,
     X11_KEY_CODE_UP = 111,
     X11_KEY_CODE_LEFT = 113,
     X11_KEY_CODE_RIGHT = 114,
@@ -109,12 +112,11 @@ enum X11_KEY_CODES_t {
 // TODO: several keys to same button maybe?
 u8 keycode_to_btn_table[256];
 static void init_btn_key_code_table(void) {
-    keycode_to_btn_table[X11_KEY_CODE_UP] = BTN_SUBDIV_INC;
-    keycode_to_btn_table[X11_KEY_CODE_DOWN] = BTN_SUBDIV_DEC;
     keycode_to_btn_table[X11_KEY_CODE_W] = BTN_MOVE_FORWARD;
     keycode_to_btn_table[X11_KEY_CODE_A] = BTN_MOVE_LEFT;
     keycode_to_btn_table[X11_KEY_CODE_S] = BTN_MOVE_BACKWARD;
     keycode_to_btn_table[X11_KEY_CODE_D] = BTN_MOVE_RIGHT;
+    keycode_to_btn_table[X11_KEY_CODE_F] = BTN_FREEZE_TERRAIN;
     keycode_to_btn_table[X11_KEY_CODE_LSHIFT] = BTN_MOVE_DOWN;
     keycode_to_btn_table[X11_KEY_CODE_SPACE] = BTN_MOVE_UP;
 }
