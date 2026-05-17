@@ -108,8 +108,12 @@ typedef struct {
 } terrain_gpu_t;
 
 typedef struct {
-    u32 some_int;
-    u32 other_int;
+    u32 grid_size;
+    float y_scale;
+
+    //fbm
+    float H;
+    u32 octaves;
     // terrain uniform data
 } UBO_terrain_noise_t;
 

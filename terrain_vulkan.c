@@ -9,7 +9,7 @@ typedef struct {
 #define TERRAIN_MAX_INSTANCES 4096
 #define GRID_SIZE 256
 #define TERRAIN_MAX_Y 1000
-#define LOD_COUNT 8
+#define LOD_COUNT 10
 
 typedef struct {
     float min_lod_dist;
@@ -551,12 +551,22 @@ void terrain_render(VulkanCtx* ctx, game_state_t* game_state, terrain_gpu_t* ter
         frozen = !frozen;
         frozen_cam = game_state->main_camera;
     } 
+
+    // instance generation
     terrain_fill_instance_data(frozen ? &frozen_cam : &game_state->main_camera, instance_data_buffer_g);
     quicksort(instance_count_g, terrain_instance_compare_buf_index, terrain_instance_swap);
+    memcpy(terrain->ssbo_instance_data[frame].mapped, instance_data_buffer_g, sizeof(terrain_instance_data_t) * instance_count_g);
+
+    // noise uniforms
+    UBO_terrain_noise_t* noise = terrain->ubo_noise[frame].mapped;
+    noise->grid_size = GRID_SIZE;
+    noise->y_scale = 8.0f;
+    noise->H = 0.5f;
+    noise->octaves = 1;
+
+
     // first to CPU buffer, also freq count
     //
-    // copy asap
-    memcpy(terrain->ssbo_instance_data[frame].mapped, instance_data_buffer_g, sizeof(terrain_instance_data_t) * instance_count_g);
 
     // Draw terrain
     vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, terrain->pipeline.handle);
