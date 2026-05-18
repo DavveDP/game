@@ -5,6 +5,7 @@ DEBUG_FLAGS="-Werror -Wno-unused-variable -Wno-unused-function -Wno-unused-but-s
 INCLUDE="-I$VULKAN_SDK/include -I."
 LIB="-L$VULKAN_SDK/lib -lvulkan -lm -lX11 -lXi"
 mkdir -p bin
+mkdir -p shaders/bin
 
 glslc shaders/shader.vert -o shaders/bin/vertex.spv
 glslc shaders/shader.frag -o shaders/bin/fragment.spv
