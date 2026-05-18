@@ -390,17 +390,12 @@ static u8 fill_instance(qt_node node, vec2 camera_xz_pos, frustum_t* frustum, u8
     }
 
 
-    // node is too far from the camera, given our LOD level(depth)
-    // dist to aabb
-    vec2 clamped = {
-        CLAMP(camera_xz_pos.x, aabb.xmin, aabb.xmax),
-        CLAMP(camera_xz_pos.y, aabb.zmin, aabb.zmax)
-    };
+    // chebichev
     vec2 diff = {
-        fmaxf(0.0f, fabsf(camera_xz_pos.x - node.x) - node.size/2),
-        fmaxf(0.0f, fabsf(camera_xz_pos.y - node.z) - node.size/2)
+        fabsf(camera_xz_pos.x - node.x) - node.size/2,
+        fabsf(camera_xz_pos.y - node.z) - node.size/2
     };
-    float d = fmaxf(diff.x, diff.y);
+    float d = fmaxf(0.0f, fmaxf(diff.x, diff.y));
     d = d * d;
     //vec2 center = { node.x, node.z };
     //float d = vec2_sq_dist(center, camera_xz_pos);
@@ -409,6 +404,7 @@ static u8 fill_instance(qt_node node, vec2 camera_xz_pos, frustum_t* frustum, u8
     //printf("%f %f %f %f\n", aabb.xmin, aabb.xmax, aabb.zmin, aabb.zmax);
     //printf("lod: %hhu, d: %f, comparing to: %f\n", lod, sqrtf(d), sqrtf(lod_to_sq_dist_quantized_g[lod]));
     float min_dist_for_lod = lod_to_sq_dist_quantized_g[lod];
+    // node is too far from the camera, given our LOD level(depth)
     if (d >= min_dist_for_lod) {
         assert(lod > 0);
         output_instance(node, lod);
@@ -447,6 +443,7 @@ void terrain_fill_instance_data(camera_t* cam, terrain_instance_data_t* instance
     //};
     float coarsest_dist = GRID_SIZE * 2; //* sqrtf(2.0f);
     float finest_dist = coarsest_dist / (float)(1 << (LOD_COUNT - 1));
+    finest_dist *= 2.0f; // finest LOD radius tuning exp dropoff
     lod_to_sq_dist_set_params(finest_dist);
     //printf("LOD distances\n");
     //for (u32 i = 0; i < LOD_COUNT; i++) {
