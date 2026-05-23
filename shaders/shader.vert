@@ -6,14 +6,32 @@ layout(set = 0, binding = 0) uniform UBO_Global {
     float time;
 } ubo_global;
 
-layout(set = 1, binding = 0) uniform UBO_Terrain {
-    // noise params will go here
-    uint grid_size;
-    float y_scale;
+struct NoiseParams {
     // fbm
     float H;
     uint octaves;
+    
+    // height design function
+    uint first_segment_index;
+    uint segment_count;
+};
+
+layout(set = 1, binding = 0) uniform UBO_Terrain {
+    // mesh related globals
+    uint grid_size;
+    float y_scale;
+
+    NoiseParams A, B, C;
 } ubo_terrain;
+
+struct SplineSegment {
+    float a, b, c, d; // cubic poly
+    float lo, hi; // bounds
+};
+
+layout(set = 1, binding = 1) readonly buffer SplineSegmentBuffer {
+    SplineSegment segments[];
+};
 
 struct InstanceData {
     float x;
@@ -22,7 +40,7 @@ struct InstanceData {
     uint buf_index;
 };
 
-layout(set = 1, binding = 1) readonly buffer InstanceBuffer {
+layout(set = 1, binding = 2) readonly buffer InstanceBuffer {
     InstanceData instances[];
 };
 
@@ -92,21 +110,81 @@ float domain_warp(in vec2 p, float H, uint octaves) {
     return fbm( p + 4.0*r, H, octaves );
 }
 
+// Gradient Noise by Inigo Quilez - iq/2013
+// https://www.shadertoy.com/view/XdXGW8
+float noise(vec2 st) {
+    vec2 i = floor(st);
+    vec2 f = fract(st);
+
+    vec2 u = f*f*(3.0-2.0*f);
+
+    return mix( mix( dot( hash2_2(i + vec2(0.0,0.0) ), f - vec2(0.0,0.0) ),
+                     dot( hash2_2(i + vec2(1.0,0.0) ), f - vec2(1.0,0.0) ), u.x),
+                mix( dot( hash2_2(i + vec2(0.0,1.0) ), f - vec2(0.0,1.0) ),
+                     dot( hash2_2(i + vec2(1.0,1.0) ), f - vec2(1.0,1.0) ), u.x), u.y);
+}
+
+float fbm2( in vec2 x, in float H, uint octaves)
+{    
+    float G = exp2(-H);
+    float f = 1.0;
+    float d = 1.0;
+    float t = 0.0;
+    float norm = 0.0;
+    for( int i=0; i<octaves; i++ )
+    {
+        t += d*noise(f*x);
+        norm += d;
+        f *= 2.0;
+        d *= G;
+    }
+    t /= norm;
+    t = t * 0.5 + 0.5;
+    return t;
+}
+
+vec2 hash2_2_int(ivec2 p) {
+    uvec2 q = uvec2(p);
+    q = q * uvec2(1664525u, 1013904223u) + q.yx;
+    q.x += q.y * 1664525u;
+    q.y += q.x * 1013904223u;
+    return vec2(q) / float(0xFFFFFFFFu) * 2.0 - 1.0;
+}
+
 void main() {
     // patch placement
     InstanceData id = instances[gl_InstanceIndex];
     vec2 patch_origin = vec2(id.x, id.z);           // patch origin is in the center of the patch
-    vec2 pos_xz = patch_origin + inPosition.xz * id.size; // assume model origin is also in the center of the geometry
 
-    // y offset
-    float scale = 4.0 / float(ubo_terrain.grid_size);
-    float y = domain_warp(pos_xz * scale, ubo_terrain.H, ubo_terrain.octaves);
-    y *= ubo_terrain.y_scale;
+
+    vec2 world_pos_xz = patch_origin + inPosition.xz * id.size; // assume model origin is also in the center of the geometry
+
+    float scale = 0.5; // your noise frequency
+    ivec2 i_coord = ivec2(round(world_pos_xz * scale));
+
+    float grid_snap = id.size / float(ubo_terrain.grid_size); // one texel in noise space
+    vec2 snapped = round(world_pos_xz / grid_snap) * grid_snap;
+
+    // for each noise (A, B, C) unrolled (using H and octaves, and random offset)
+    // A: lower freq, domain warp
+    // B and C: normal fbm
+    // for each loop over segments, starting at starting index, n times
+    //evaluate poly a, b, c, d multiplying by step with hi, lo and summing
+    float a = smoothstep(0.2, 0.8, fbm2(world_pos_xz * 0.02, 0.5, 1));
+    a = pow(a, 3.0);
+    float b = fbm2(world_pos_xz * 0.5, 0.5, 2);
+    float c = smoothstep(0.1, 0.9, fbm2(world_pos_xz * 0.1, 0.5, 2));
+
+    // old
+    //float y = domain_warp(pos_xz * scale, ubo_terrain.A.H, ubo_terrain.A.octaves);
+    //y *= ubo_terrain.y_scale;
 
     // projection
-    gl_Position = ubo_global.proj * ubo_global.view * vec4(pos_xz.x, y, pos_xz.y, 1.0);
+    gl_Position = ubo_global.proj * ubo_global.view * vec4(world_pos_xz.x, 0, world_pos_xz.y, 1.0);
 
     //fragColor = vec3(inPosition.xz, .0);
-    fragColor = vec3(0.2, 1.0, 0.2);
+    float y = a;
 
+
+    fragColor = vec3(y);
 }

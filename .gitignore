@@ -3,6 +3,9 @@ tags
 *.swp
 core
 
+# papers
+papers/
+
 # game files
 *.out
 *.spv

@@ -89,6 +89,7 @@ void mesh_subdiv_plane(u8 subdiv, void* vertices, u32 stride, u32* nvertices, u1
                 indices[i++] = x;
                 indices[i++] = x + dx;
                 indices[i++] = x + dy;
+
                 indices[i++] = x + dy;
                 indices[i++] = x + dx;
                 indices[i++] = x + dx + dy;

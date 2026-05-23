@@ -1,4 +1,4 @@
-#include <mesh.c> // plane subdivision
+ #include <mesh.c> // plane subdivision
 // Rendering
 
 typedef struct {
@@ -7,6 +7,7 @@ typedef struct {
 
 
 #define TERRAIN_MAX_INSTANCES 4096
+#define TERRAIN_MAX_SPLINE_SEGMENTS 128 // across all terrain splines
 #define GRID_SIZE 256
 #define TERRAIN_MAX_Y 1000
 #define LOD_COUNT 10
@@ -53,14 +54,15 @@ void terrain_init(
         file_data_t vert_shader, 
         file_data_t frag_shader) 
 {
-    // alloc uniform buffer (one for each frame)
     terrain->ubo_noise = alloc_array(arena_permanent, gpu_alloc_t, ctx->render_state.frames_in_flight);
-    for (u32 i = 0; i < ctx->render_state.frames_in_flight; i++) {
-        terrain->ubo_noise[i] = gpu_heap_alloc(&ctx->heap_ubo_ssbo, sizeof(UBO_terrain_noise_t));
-    }
-    // alloc instance data buffer
+    terrain->ssbo_spline_segments = alloc_array(arena_permanent, gpu_alloc_t, ctx->render_state.frames_in_flight);
     terrain->ssbo_instance_data = alloc_array(arena_permanent, gpu_alloc_t, ctx->render_state.frames_in_flight);
     for (u32 i = 0; i < ctx->render_state.frames_in_flight; i++) {
+        // alloc uniform buffer (one for each frame)
+        terrain->ubo_noise[i] = gpu_heap_alloc(&ctx->heap_ubo_ssbo, sizeof(UBO_terrain_noise_t));
+        // alloc spline segment buffer (for terrain shaping)
+        terrain->ssbo_spline_segments[i] = gpu_heap_alloc(&ctx->heap_ubo_ssbo, sizeof(terrain_spline_segment_t) * TERRAIN_MAX_SPLINE_SEGMENTS);
+        // alloc instance data buffer
         terrain->ssbo_instance_data[i] = gpu_heap_alloc(&ctx->heap_ubo_ssbo, sizeof(terrain_instance_data_t) * TERRAIN_MAX_INSTANCES);
     }
 
@@ -76,9 +78,16 @@ void terrain_init(
                 .descriptorCount = 1,
                 .stageFlags = VK_SHADER_STAGE_VERTEX_BIT
             },
-            // instance data
+            // spline segments
             {
                 .binding = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_VERTEX_BIT
+            },
+            // instance data
+            {
+                .binding = 2,
                 .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                 .descriptorCount = 1,
                 .stageFlags = VK_SHADER_STAGE_VERTEX_BIT
@@ -109,6 +118,11 @@ void terrain_init(
                 .offset = terrain->ubo_noise[i].offset,
                 .range = sizeof(UBO_terrain_noise_t)
             };
+            VkDescriptorBufferInfo ssbo_spline_segments_buffer_info = {
+                .buffer = terrain->ssbo_spline_segments[i].heap->buffer,
+                .offset = terrain->ssbo_spline_segments[i].offset,
+                .range = sizeof(terrain_spline_segment_t)
+            };
             VkDescriptorBufferInfo ssbo_buffer_info = {
                 .buffer = terrain->ssbo_instance_data[i].heap->buffer,
                 .offset = terrain->ssbo_instance_data[i].offset,
@@ -132,8 +146,17 @@ void terrain_init(
                     .dstArrayElement = 0,
                     .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                     .descriptorCount = 1,
-                    .pBufferInfo = &ssbo_buffer_info
+                    .pBufferInfo = &ssbo_spline_segments_buffer_info
                 },
+                {
+                    .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    .dstSet = terrain->descriptor_sets[i],
+                    .dstBinding = 2,
+                    .dstArrayElement = 0,
+                    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                    .descriptorCount = 1,
+                    .pBufferInfo = &ssbo_buffer_info
+                }
             };
             // TODO: check what copy params mean and if this can be outside loop in that case
             vkUpdateDescriptorSets(ctx->device.handle, LEN(descriptor_writes), descriptor_writes, 0, NULL);
@@ -205,10 +228,10 @@ void terrain_init(
         // Rasterization
         VkPipelineRasterizationStateCreateInfo rasterizerInfo = {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-            .depthClampEnable = VK_FALSE,
+            .depthClampEnable = VK_TRUE,
             .rasterizerDiscardEnable = VK_FALSE,
-            .polygonMode = VK_POLYGON_MODE_LINE,
-            .cullMode = VK_CULL_MODE_NONE,
+            .polygonMode = VK_POLYGON_MODE_FILL,
+            .cullMode = VK_CULL_MODE_BACK_BIT,
             .frontFace = VK_FRONT_FACE_CLOCKWISE,
             .depthBiasEnable = VK_FALSE,
             .lineWidth = 1.0f
@@ -556,11 +579,30 @@ void terrain_render(VulkanCtx* ctx, game_state_t* game_state, terrain_gpu_t* ter
 
     // noise uniforms
     UBO_terrain_noise_t* noise = terrain->ubo_noise[frame].mapped;
-    noise->grid_size = GRID_SIZE;
-    noise->y_scale = 8.0f;
-    noise->H = 0.5f;
-    noise->octaves = 1;
+    noise->grid_size = GRID_SIZE*2;
+    noise->y_scale = 15.0f;
 
+    vec2 p0, p1, p2, p3;
+    const bezier2d_t a_segments[] = {
+        {{0.0f, 0.0f}, {15.0f, 0.0f}, {15.0f, 0.0f}, {0.0f, 0.0f}},
+    };
+    const bezier2d_t b_segments[] = {
+
+    };
+    const bezier2d_t c_segments[] = {
+
+    };
+    UBO_terrain_noise_params_t* A = &noise->A;
+    A->first_segment_index = 0;
+    A->segment_count = LEN(a_segments);
+    UBO_terrain_noise_params_t* B = &noise->B;
+    B->first_segment_index = A->segment_count;
+    B->segment_count = LEN(b_segments);;
+    UBO_terrain_noise_params_t* C = &noise->C;
+    C->first_segment_index = A->segment_count + B->segment_count;
+    C->segment_count = LEN(c_segments);
+
+    terrain_spline_segment_t* s = terrain->ssbo_spline_segments[frame].mapped;
 
     // first to CPU buffer, also freq count
     //
