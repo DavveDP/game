@@ -1,7 +1,8 @@
 typedef struct PhysicalDevice {
     VkPhysicalDevice handle;
     VkPhysicalDeviceProperties props;
-    VkPhysicalDeviceMemoryProperties memory_props;
+    VkPhysicalDeviceMemoryProperties props_memory;
+    //VkFormatProperties props_format;
     u32 presentIndex;
 
     struct {
@@ -43,25 +44,23 @@ typedef struct LogicalDevice {
 } LogicalDevice;
 
 typedef struct {
-    VkPipeline handle;
-    VkPipelineLayout layout;
-} pipeline_t;
-
-typedef struct {
     // indexed by frame
     VkCommandBuffer* cmd_buffers_graphics;
     VkSemaphore* image_available_semaphores;
     VkSemaphore* render_finished_semaphores;
     VkFence* in_flight_fences;
 
+    VkQueryPool query_pool_timestamp;
     VkCommandPool cmd_pool_graphics_auto_reset;
     VkCommandPool cmd_pool_graphics_transient;
     u32 frames_in_flight;
     u32 image_count;
     u32 curr_image_index;
     u32 frame;
+    u64 frame_count;
     bool recreate_swapchain;
     u8 swapchain_cooldown;
+    float curr_render_time_ms;
 } render_state_t;
 
 typedef struct VulkanCtx {
@@ -93,13 +92,22 @@ u32 window_width(VulkanCtx* ctx) {
     return ctx->physicalDevice.selected->surfaceCapabilities.currentExtent.width;
 }
 
+typedef enum {
+    TERRAIN_PIPELINE_SHADED,
+    TERRAIN_PIPELINE_WIREFRAME,
+    TERRAIN_PIPELINE_TYPE_COUNT
+} TERRAIN_PIPELINE_TYPE;
+
 typedef struct {
     gpu_alloc_t gpu_mem_vertices;
     u32 n_vertices;
     gpu_alloc_t gpu_mem_indices[9];
     u32 n_indices[9];
 
-    pipeline_t pipeline;
+    VkPipeline* pipelines;
+    VkPipelineLayout* pipeline_layouts;
+    u32 pipeline_count;
+
     VkDescriptorSetLayout descriptor_set_layout;
     // offset per frame 
     VkDescriptorSet* descriptor_sets;
@@ -118,19 +126,25 @@ typedef struct {
     u32 segment_count;
 } UBO_terrain_noise_params_t;
 
+static_assert(sizeof(UBO_terrain_noise_params_t) == 16);
+
 typedef struct {
     // mesh related globals
     u32 grid_size;
     float y_scale;
+    float _pad[2];
 
     // noise
     UBO_terrain_noise_params_t A, B, C;
 } UBO_terrain_noise_t;
 
+static_assert(sizeof(UBO_terrain_noise_t) == 64);
+
 typedef struct {
-    float a, b, c, d; // cubic poly
-    float lo, hi; // bounds
+    bezier2d_t curve;
 } terrain_spline_segment_t;
+
+static_assert(sizeof(terrain_spline_segment_t) == 32);
 
 typedef struct {
     VulkanCtx ctx;

@@ -25,8 +25,7 @@ layout(set = 1, binding = 0) uniform UBO_Terrain {
 } ubo_terrain;
 
 struct SplineSegment {
-    float a, b, c, d; // cubic poly
-    float lo, hi; // bounds
+    vec2 p0, p1, p2, p3;
 };
 
 layout(set = 1, binding = 1) readonly buffer SplineSegmentBuffer {
@@ -99,17 +98,6 @@ float fbm( in vec2 x, in float H, uint octaves )
     return t;
 }
 
-float domain_warp(in vec2 p, float H, uint octaves) {
-
-    vec2 q = vec2( fbm( p + vec2(0.0,0.0), H, octaves ),
-                   fbm( p + vec2(5.2,1.3), H, octaves ) );
-
-    vec2 r = vec2( fbm( p + 4.0*q + vec2(1.7,9.2), H, octaves ),
-                   fbm( p + 4.0*q + vec2(8.3,2.8), H, octaves ));
-
-    return fbm( p + 4.0*r, H, octaves );
-}
-
 // Gradient Noise by Inigo Quilez - iq/2013
 // https://www.shadertoy.com/view/XdXGW8
 float noise(vec2 st) {
@@ -123,6 +111,7 @@ float noise(vec2 st) {
                 mix( dot( hash2_2(i + vec2(0.0,1.0) ), f - vec2(0.0,1.0) ),
                      dot( hash2_2(i + vec2(1.0,1.0) ), f - vec2(1.0,1.0) ), u.x), u.y);
 }
+
 
 float fbm2( in vec2 x, in float H, uint octaves)
 {    
@@ -151,40 +140,95 @@ vec2 hash2_2_int(ivec2 p) {
     return vec2(q) / float(0xFFFFFFFFu) * 2.0 - 1.0;
 }
 
+
+float domain_warp(in vec2 p, float H, uint octaves) {
+
+    vec2 q = vec2( fbm2( p + vec2(0.0,0.0), H, octaves ),
+                   fbm2( p + vec2(5.2,1.3), H, octaves ) );
+
+    vec2 r = vec2( fbm2( p + 4.0*q + vec2(1.7,9.2), H, octaves ),
+                   fbm2( p + 4.0*q + vec2(8.3,2.8), H, octaves ));
+
+    return fbm2( p + 4.0*r, H, octaves );
+}
+
+float eval_spline(uint start_index, uint count, float x) {
+    uint index = start_index;
+    float height = 0.0;
+    for (uint i = 0; i < count; i++) {
+        SplineSegment s = segments[index];
+        float lo = s.p0.x; 
+        float hi = s.p3.x;
+        float t = (x - lo) / (hi - lo);
+        float t_1 = 1 - t;
+        
+        float y = 
+            t_1 * t_1 * t_1 * s.p0.y +
+            3.0 * t_1 * t_1 * t * s.p1.y +
+            3.0 * t_1 * t * t * s.p2.y +
+            t * t * t * s.p3.y;
+
+        float m = step(lo, x) * step(x, hi); // masks the segment
+        height += m*y;
+        index++;
+    }
+    return height;
+}
+
 void main() {
     // patch placement
     InstanceData id = instances[gl_InstanceIndex];
     vec2 patch_origin = vec2(id.x, id.z);           // patch origin is in the center of the patch
-
-
     vec2 world_pos_xz = patch_origin + inPosition.xz * id.size; // assume model origin is also in the center of the geometry
 
-    float scale = 0.5; // your noise frequency
-    ivec2 i_coord = ivec2(round(world_pos_xz * scale));
 
-    float grid_snap = id.size / float(ubo_terrain.grid_size); // one texel in noise space
-    vec2 snapped = round(world_pos_xz / grid_snap) * grid_snap;
+    // noise (y offset)
 
     // for each noise (A, B, C) unrolled (using H and octaves, and random offset)
     // A: lower freq, domain warp
     // B and C: normal fbm
     // for each loop over segments, starting at starting index, n times
     //evaluate poly a, b, c, d multiplying by step with hi, lo and summing
-    float a = smoothstep(0.2, 0.8, fbm2(world_pos_xz * 0.02, 0.5, 1));
-    a = pow(a, 3.0);
-    float b = fbm2(world_pos_xz * 0.5, 0.5, 2);
-    float c = smoothstep(0.1, 0.9, fbm2(world_pos_xz * 0.1, 0.5, 2));
-
-    // old
-    //float y = domain_warp(pos_xz * scale, ubo_terrain.A.H, ubo_terrain.A.octaves);
-    //y *= ubo_terrain.y_scale;
-
-    // projection
-    gl_Position = ubo_global.proj * ubo_global.view * vec4(world_pos_xz.x, 0, world_pos_xz.y, 1.0);
-
-    //fragColor = vec3(inPosition.xz, .0);
-    float y = a;
+    float a = smoothstep(0.1, 0.9, fbm2(world_pos_xz * 0.01, 0.5, 2));
+    float b = smoothstep(0.2, 0.8, fbm2(world_pos_xz * 0.02, 0.5, 2));
+    float c = smoothstep(0.2, 0.8, fbm2(world_pos_xz * 0.5, 0.5, 1));
+    c *= c;
 
 
-    fragColor = vec3(y);
+
+    // use spline-based height functions
+    float height = 0.0;
+    height += eval_spline(ubo_terrain.A.first_segment_index, ubo_terrain.A.segment_count, a);
+    //height += b;//eval_spline(ubo_terrain.B.first_segment_index, ubo_terrain.B.segment_count, b);
+    //height += c;//eval_spline(ubo_terrain.C.first_segment_index, ubo_terrain.C.segment_count, c);
+
+    float s =
+        step(0.077586, a) +
+        step(0.267241, a) +
+        step(0.301724, a) +
+        step(0.461207, a) +
+        step(0.517241, a) +
+        step(0.560345, a) +
+        step(0.767241, a);
+
+    vec3 colors[8] = vec3[](
+            vec3(1,0,0), // seg0 (red)
+            vec3(1,0.5,0), // orange
+            vec3(1,1,0), // yellow
+            vec3(0,1,0), // green
+            vec3(0,1,1), // cyan
+            vec3(0,0,1), // blue
+            vec3(1,0,1), // magenta
+            vec3(1,1,1)  // seg7 (white)
+            );
+
+
+
+    fragColor = vec3(colors[int(s)]);
+
+    //float height = b;
+
+    gl_Position = ubo_global.proj * ubo_global.view * vec4(world_pos_xz.x, height, world_pos_xz.y, 1.0);
+
+    //fragColor = vec3(0.2, 0.8, 0.2);
 }

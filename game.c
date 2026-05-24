@@ -19,11 +19,6 @@ void main_camera_movement(input_t* input, game_state_t* game_state, float delta_
     if (was_btn_held_or_pressed(input, BTN_MOVE_DOWN)) {
         camera_acceleration.y =-1.0f;
     }
-    if (was_btn_pressed(input, BTN_FREEZE_TERRAIN)) {
-        game_state->freeze_terrain = true;
-    } else {
-        game_state->freeze_terrain = false;
-    }
     if (!vec3_is_zero(camera_acceleration)) {
         camera_acceleration = vec3_normalized(camera_acceleration);
     }
@@ -79,4 +74,14 @@ void update(input_t* input, game_state_t* game_state, float delta_time) {
     //    game_state->current_subdiv = ((game_state->current_subdiv - 1) + n_index_buffers) % n_index_buffers;
     //}
     main_camera_movement(input, game_state, delta_time);
+    
+    if (was_btn_pressed(input, BTN_FREEZE_TERRAIN)) {
+        game_state->freeze_terrain = true;
+    } else {
+        game_state->freeze_terrain = false;
+    }
+
+    if (was_btn_pressed(input, BTN_TOGGLE_WIREFRAME)) {
+        game_state->show_wireframe = !game_state->show_wireframe;
+    }
 }

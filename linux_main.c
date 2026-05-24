@@ -100,6 +100,7 @@ enum X11_KEY_CODES_t {
     X11_KEY_CODE_S = 39,
     X11_KEY_CODE_D = 40,
     X11_KEY_CODE_F = 41,
+    X11_KEY_CODE_M = 58,
     X11_KEY_CODE_UP = 111,
     X11_KEY_CODE_LEFT = 113,
     X11_KEY_CODE_RIGHT = 114,
@@ -117,9 +118,13 @@ static void init_btn_key_code_table(void) {
     keycode_to_btn_table[X11_KEY_CODE_S] = BTN_MOVE_BACKWARD;
     keycode_to_btn_table[X11_KEY_CODE_D] = BTN_MOVE_RIGHT;
     keycode_to_btn_table[X11_KEY_CODE_F] = BTN_FREEZE_TERRAIN;
+    keycode_to_btn_table[X11_KEY_CODE_M] = BTN_TOGGLE_WIREFRAME;
     keycode_to_btn_table[X11_KEY_CODE_LSHIFT] = BTN_MOVE_DOWN;
     keycode_to_btn_table[X11_KEY_CODE_SPACE] = BTN_MOVE_UP;
 }
+
+#define delta_s(T1, T2) ((float)((T2) - (T1)) / 1000000000ull);
+#define delta_ms(T1, T2) ((float)((T2) - (T1)) / 1000000ull);
 
 u64 get_time_ns() {
     struct timespec ts;
@@ -165,6 +170,11 @@ VkResult create_x11_surface(VkInstance instance, VkSurfaceKHR* surface_out) {
 }
 
 int main(int argc, char** argv) {
+    //const bezier2d_t a_segments[] = {
+    //    {{0.0f, 0.0f}, {0.00f, 1.0f}, {1.0f, 0.0f}, {1.0f, 0.0f}},
+    //};
+    //poly_cubic_t p = bezier2d_to_poly_cubic(a_segments);
+    //printf("%fx^3 + %fx^2\n", p.a, p.b, p.c, p.d);
     set_proc_dir_to_exe_dir();
     //world_t world;
     //world.main_camera = camera_looking_at_from((vec3){0,0,0}, (vec3){0,2,0,});
@@ -286,7 +296,7 @@ int main(int argc, char** argv) {
 
     // game init?
     game_state_t game_state;
-    game_state.main_camera = camera_looking_at_from((vec3){1.0f,0,1.0f}, (vec3){0,100,0});
+    game_state.main_camera = camera_looking_at_from((vec3){1.0f,0,1.0f}, (vec3){0,250,0});
     game_state.camera_speed = vec3_zero;
     game_state.current_subdiv = 1;
     float delta_time = 0;
@@ -295,9 +305,14 @@ int main(int argc, char** argv) {
 update_start:
     while(running) {
         u64 new_time = get_time_ns();
-        delta_time = ((float)(new_time - curr_time)/ 1000000000ull);
+        delta_time = delta_s(curr_time, new_time);
         curr_time = new_time; 
-        float time = ((float)(curr_time - start_time)/ 1000000000ull);
+
+        // total time
+        float time = delta_s(start_time, curr_time);
+        // render frame time
+        printf("delta_time: %f, frame_time: %f\n", delta_time * 1000, renderer->ctx.render_state.curr_render_time_ms);
+
 #ifdef ENABLE_HOT_RELOAD
         RUN_EVERY(hot_reload_sync(GAME_LIB_FILENAME, &game_api, &render_api), 1.0f, delta_time);
 #endif
@@ -339,6 +354,7 @@ update_start:
                 case KeyPress:
                     {
                         u8 code = (u8)e.xkey.keycode;
+                        //printf("%hhu pressed!\n", code);
                         BUTTON b = keycode_to_btn_table[code];
                         if (b) {
                             register_btn_press(&input, b);

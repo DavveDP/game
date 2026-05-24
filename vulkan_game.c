@@ -340,7 +340,7 @@ vulkan_state_t* init_rendering(
 
             validDevice->handle = handles[i];
             vkGetPhysicalDeviceProperties(handles[i], &validDevice->props);
-            vkGetPhysicalDeviceMemoryProperties(handles[i], &validDevice->memory_props);
+            vkGetPhysicalDeviceMemoryProperties(handles[i], &validDevice->props_memory);
             u32 propCount;
             vkEnumerateDeviceExtensionProperties(handles[i], NULL, &propCount, NULL);
             VkExtensionProperties* extProps = alloc_array(arena_scratch, VkExtensionProperties, propCount);
@@ -393,7 +393,7 @@ vulkan_state_t* init_rendering(
             res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(handles[i], ctx->surface, &validDevice->surfaceCapabilities);
             if (res != VK_SUCCESS) continue;
 
-            // formats
+            // surface formats
             res = vkGetPhysicalDeviceSurfaceFormatsKHR(handles[i], ctx->surface, &validDevice->formats.count, NULL);
             if (res != VK_SUCCESS) continue;
             validDevice->formats.items = alloc_array(arena_scratch /*discarded*/, VkSurfaceFormatKHR, validDevice->formats.count);
@@ -447,6 +447,18 @@ vulkan_state_t* init_rendering(
     ctx->render_state.image_count = get_surface_capabilities_image_count(ctx);
     ctx->render_state.frames_in_flight = MIN(ctx->render_state.image_count, MAX_FRAMES_IN_FLIGHT);
     assert(ctx->render_state.frames_in_flight > 0);
+
+    // create query pool, TODO: pipeline statistics maybe?
+    {
+        VkQueryPoolCreateInfo info = {
+            .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+            .queryType = VK_QUERY_TYPE_TIMESTAMP,
+            .queryCount = ctx->render_state.frames_in_flight * 2 // one before render and one after
+        };
+
+        res = vkCreateQueryPool(ctx->device.handle, &info, NULL, &ctx->render_state.query_pool_timestamp);
+        assert(res == VK_SUCCESS);
+    }
 
     // create render pass
     {
@@ -505,21 +517,21 @@ vulkan_state_t* init_rendering(
     ctx->heap_ubo_ssbo = gpu_heap_create(
             ctx->device.handle, 
             ctx->physicalDevice.selected->handle, 
-            &ctx->physicalDevice.selected->memory_props, 
+            &ctx->physicalDevice.selected->props_memory, 
             MB(16), 
             VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     ctx->heap_staging = gpu_heap_create(
             ctx->device.handle, 
             ctx->physicalDevice.selected->handle, 
-            &ctx->physicalDevice.selected->memory_props, 
+            &ctx->physicalDevice.selected->props_memory, 
             MB(16), 
             VK_BUFFER_USAGE_TRANSFER_SRC_BIT, 
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     ctx->heap_local_mesh = gpu_heap_create(
             ctx->device.handle, 
             ctx->physicalDevice.selected->handle, 
-            &ctx->physicalDevice.selected->memory_props, 
+            &ctx->physicalDevice.selected->props_memory, 
             MB(16), 
             VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
@@ -653,8 +665,8 @@ vulkan_state_t* init_rendering(
         VkWriteDescriptorSet* writes = alloc_array(arena_scratch, VkWriteDescriptorSet, ctx->render_state.frames_in_flight);
         for (u32 i = 0; i < ctx->render_state.frames_in_flight; i++) {
             buffer_info[i].buffer = state->ubo_global[i].heap->buffer,
-            buffer_info[i].offset = state->ubo_global[i].offset,
-            buffer_info[i].range = sizeof(UBO_global_t);
+                buffer_info[i].offset = state->ubo_global[i].offset,
+                buffer_info[i].range = sizeof(UBO_global_t);
 
             writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writes[i].dstSet = state->ubo_global_descriptor_sets[i];
@@ -683,6 +695,14 @@ void render(vulkan_state_t* vulkan_state, game_state_t* game_state, float time) 
     // means that semaphores and commandbuffers above are no longer in use by CPU
     vkWaitForFences(ctx->device.handle, 1, &fence, VK_TRUE, UINT64_MAX);
 
+    if (state->frame_count >= state->frames_in_flight) {
+        u64 timestamps[2];
+        vkGetQueryPoolResults(ctx->device.handle, state->query_pool_timestamp, frame * LEN(timestamps), 
+                LEN(timestamps), sizeof(timestamps), timestamps, sizeof(u64), 
+                VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+        state->curr_render_time_ms = (timestamps[1] - timestamps[0]) * ctx->physicalDevice.selected->props.limits.timestampPeriod * 1e-6f;
+    }
+
     // bookkeeping
     if (state->swapchain_cooldown > 0) state->swapchain_cooldown--;
     if (state->recreate_swapchain || 
@@ -697,7 +717,7 @@ void render(vulkan_state_t* vulkan_state, game_state_t* game_state, float time) 
         // create new (transition from old)
         arena_t temp = arena_create(block_alloc(&ctx->device.swapchain_allocator), ctx->device.swapchain_allocator.blockSize);
         Swapchain* old = ctx->device.swapchain;
-        create_and_set_new_swapchain(&temp, ctx->render_state.image_count, ctx);
+        create_and_set_new_swapchain(&temp, state->image_count, ctx);
 
         // destroy old
         destroy_swapchain(ctx->device.handle, old);
@@ -745,6 +765,7 @@ void render(vulkan_state_t* vulkan_state, game_state_t* game_state, float time) 
     res = vkBeginCommandBuffer(cmdBuf, &beginInfo);
     assert(res == VK_SUCCESS);
 
+
     VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
     VkRenderPassBeginInfo renderPassBeginInfo = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
@@ -755,19 +776,22 @@ void render(vulkan_state_t* vulkan_state, game_state_t* game_state, float time) 
         .clearValueCount = 1,
         .pClearValues = &clearColor
     };
+    vkCmdResetQueryPool(cmdBuf, state->query_pool_timestamp, frame * 2, 2);
     vkCmdBeginRenderPass(cmdBuf, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
 
+    vkCmdWriteTimestamp(cmdBuf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, state->query_pool_timestamp, frame * 2);
     terrain_render(&vulkan_state->ctx, game_state, &vulkan_state->terrain, cmdBuf, vulkan_state->ubo_global_descriptor_sets[frame], frame);
 
     // TODO: render other things here
 
     vkCmdEndRenderPass(cmdBuf);
+    vkCmdWriteTimestamp(cmdBuf, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, state->query_pool_timestamp, frame * 2 + 1);
     res = vkEndCommandBuffer(cmdBuf);
     assert(res == VK_SUCCESS);
 
     // render more things here...
 
-    VkSemaphore renderFinishedSemaphore = ctx->render_state.render_finished_semaphores[state->curr_image_index];
+    VkSemaphore renderFinishedSemaphore = state->render_finished_semaphores[state->curr_image_index];
 
     // submit to cmd buf
     VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
@@ -794,8 +818,9 @@ void render(vulkan_state_t* vulkan_state, game_state_t* game_state, float time) 
         .pImageIndices = &state->curr_image_index
     };
     res = vkQueuePresentKHR(ctx->device.queueHandles.present, &presentInfo);
-    if ((res == VK_SUBOPTIMAL_KHR || res == VK_ERROR_OUT_OF_DATE_KHR) && ctx->render_state.swapchain_cooldown == 0) {
+    if ((res == VK_SUBOPTIMAL_KHR || res == VK_ERROR_OUT_OF_DATE_KHR) && state->swapchain_cooldown == 0) {
         state->recreate_swapchain = true;
     }
-    ctx->render_state.frame = (ctx->render_state.frame + 1) % ctx->render_state.frames_in_flight;
+    state->frame = (state->frame + 1) % state->frames_in_flight;
+    state->frame_count++;
 }

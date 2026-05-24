@@ -9,7 +9,7 @@ typedef struct {
 #define TERRAIN_MAX_INSTANCES 4096
 #define TERRAIN_MAX_SPLINE_SEGMENTS 128 // across all terrain splines
 #define GRID_SIZE 256
-#define TERRAIN_MAX_Y 1000
+#define TERRAIN_MAX_Y 150
 #define LOD_COUNT 10
 
 typedef struct {
@@ -44,6 +44,156 @@ void lod_to_sq_dist_set_params(float finest_dist) {
 //        lod_to_sq_dist_quantized_g[i] = lod_to_sq_dist(i, params);
 //    }
 //}
+//
+
+void create_shaded_pipeline(
+        VulkanCtx* ctx, 
+        VkDescriptorSetLayout* descriptor_set_layouts, 
+        u32 descriptor_set_layout_count, 
+        file_data_t vert_shader, file_data_t frag_shader,
+        bool wireframe,
+        VkPipeline* out_pipeline,
+        VkPipelineLayout* out_layout) 
+{
+    VkResult res;
+    // create shader stages
+    VkPipelineShaderStageCreateInfo stages[] = {
+        {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .stage = VK_SHADER_STAGE_VERTEX_BIT,
+            .module = create_shader_module(ctx->device.handle, (const u32*)vert_shader.data, vert_shader.size, &res),
+            .pName = "main"
+        },
+        {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+            .module = create_shader_module(ctx->device.handle, (const u32*)frag_shader.data, frag_shader.size, &res),
+            .pName = "main"
+        }
+    };
+    assert(res == VK_SUCCESS);
+
+    // vertex input (single vertex buffer)
+    VkVertexInputBindingDescription vertexBindings[] = {
+        { .binding = 0, .stride = sizeof(terrain_vertex_t), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX }
+    };
+
+    VkVertexInputAttributeDescription vertexAttr[] = {
+        { .location = 0, .binding = 0, .format = VK_FORMAT_R32G32B32_SFLOAT,    .offset = offsetof(terrain_vertex_t, pos)     }
+    };
+
+    VkPipelineVertexInputStateCreateInfo vertexInputInfo = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        .vertexBindingDescriptionCount = LEN(vertexBindings),
+        .pVertexBindingDescriptions = vertexBindings,
+        .vertexAttributeDescriptionCount = LEN(vertexAttr),
+        .pVertexAttributeDescriptions = vertexAttr
+    };
+
+    // input assembly 
+    VkPipelineInputAssemblyStateCreateInfo inputAssemblyInfo = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        .primitiveRestartEnable = VK_FALSE
+    };
+
+    // Tessellation (Skip)
+
+    // Dynamic State (Swapchain may change)
+    VkDynamicState dynamicStates[] = {
+        VK_DYNAMIC_STATE_VIEWPORT,
+        VK_DYNAMIC_STATE_SCISSOR
+    };
+    VkPipelineDynamicStateCreateInfo dynamicStateInfo = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        .dynamicStateCount = LEN(dynamicStates),
+        .pDynamicStates = dynamicStates
+    };
+
+    VkPipelineViewportStateCreateInfo viewportInfo = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        .viewportCount = 1,
+        .scissorCount = 1,
+    };
+
+    // Rasterization
+    VkPipelineRasterizationStateCreateInfo rasterizerInfo = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .depthClampEnable = VK_TRUE,
+        .rasterizerDiscardEnable = VK_FALSE,
+        .polygonMode = wireframe ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL,
+        .cullMode = VK_CULL_MODE_BACK_BIT,
+        .frontFace = VK_FRONT_FACE_CLOCKWISE,
+        .depthBiasEnable = VK_FALSE,
+        .lineWidth = 1.0f
+    };
+
+    // Multisample (antialiasing?, thought that was done in PP not per material, but cool...)
+    VkPipelineMultisampleStateCreateInfo multisampleInfo = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+        .sampleShadingEnable = VK_FALSE,
+    };
+
+    // DepthStencil (Skip)
+    VkPipelineDepthStencilStateCreateInfo depthStencil = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        .depthTestEnable = VK_TRUE,
+        .depthWriteEnable = VK_TRUE,
+        .depthCompareOp = VK_COMPARE_OP_LESS,
+        .depthBoundsTestEnable = VK_FALSE,
+        .stencilTestEnable = VK_FALSE
+    };
+
+    // Color Blending
+    VkPipelineColorBlendAttachmentState blendAttachment = {
+        .blendEnable = VK_FALSE,
+        .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT
+    };
+
+    VkPipelineColorBlendStateCreateInfo blendStateInfo = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        .logicOpEnable = VK_FALSE,
+        .attachmentCount = 1,
+        .pAttachments = &blendAttachment
+    };
+
+    // Pipeline layout (descriptor sets)
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = descriptor_set_layout_count,
+        .pSetLayouts = descriptor_set_layouts
+    };
+    res = vkCreatePipelineLayout(ctx->device.handle, &pipelineLayoutInfo, NULL, out_layout);
+    assert(res == VK_SUCCESS);
+
+    VkGraphicsPipelineCreateInfo pipelineInfo = {
+        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .stageCount = LEN(stages),
+        .pStages = stages,
+        .pVertexInputState = &vertexInputInfo,
+        .pInputAssemblyState = &inputAssemblyInfo,
+        // skipping tesselation
+        .pViewportState = &viewportInfo,
+        .pRasterizationState = &rasterizerInfo,
+        .pMultisampleState = &multisampleInfo,
+        .pDepthStencilState = &depthStencil,
+        .pColorBlendState = &blendStateInfo,
+        .pDynamicState = &dynamicStateInfo,
+        // skipping dynamic state
+        .layout = *out_layout,
+        .renderPass = ctx->renderPass,
+        .subpass = 0,
+    };
+    // TODO: create all pipelines at once instead
+    res = vkCreateGraphicsPipelines(ctx->device.handle, NULL/*TODO:cache required*/, 1, &pipelineInfo, NULL, out_pipeline);
+    assert(res == VK_SUCCESS);
+
+    // destroy shader modules once ctx->pipeline is created
+    for (int i = 0; i < LEN(stages); i++) {
+        vkDestroyShaderModule(ctx->device.handle, stages[i].module, NULL);
+    }
+}
 
 void terrain_init(
         terrain_gpu_t* terrain,
@@ -121,7 +271,7 @@ void terrain_init(
             VkDescriptorBufferInfo ssbo_spline_segments_buffer_info = {
                 .buffer = terrain->ssbo_spline_segments[i].heap->buffer,
                 .offset = terrain->ssbo_spline_segments[i].offset,
-                .range = sizeof(terrain_spline_segment_t)
+                .range = sizeof(terrain_spline_segment_t) * TERRAIN_MAX_SPLINE_SEGMENTS
             };
             VkDescriptorBufferInfo ssbo_buffer_info = {
                 .buffer = terrain->ssbo_instance_data[i].heap->buffer,
@@ -165,135 +315,21 @@ void terrain_init(
 
     // create pipeline
     {
-        // create shader stages
-        VkPipelineShaderStageCreateInfo stages[] = {
-            {
-                .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                .stage = VK_SHADER_STAGE_VERTEX_BIT,
-                .module = create_shader_module(ctx->device.handle, (const u32*)vert_shader.data, vert_shader.size, &res),
-                .pName = "main"
-            },
-            {
-                .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-                .module = create_shader_module(ctx->device.handle, (const u32*)frag_shader.data, frag_shader.size, &res),
-                .pName = "main"
-            }
-        };
-        assert(res == VK_SUCCESS);
-
-        // vertex input (single vertex buffer)
-        VkVertexInputBindingDescription vertexBindings[] = {
-            { .binding = 0, .stride = sizeof(terrain_vertex_t), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX }
-        };
-
-        VkVertexInputAttributeDescription vertexAttr[] = {
-            { .location = 0, .binding = 0, .format = VK_FORMAT_R32G32B32_SFLOAT,    .offset = offsetof(terrain_vertex_t, pos)     }
-        };
-
-        VkPipelineVertexInputStateCreateInfo vertexInputInfo = {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-            .vertexBindingDescriptionCount = LEN(vertexBindings),
-            .pVertexBindingDescriptions = vertexBindings,
-            .vertexAttributeDescriptionCount = LEN(vertexAttr),
-            .pVertexAttributeDescriptions = vertexAttr
-        };
-
-        // input assembly 
-        VkPipelineInputAssemblyStateCreateInfo inputAssemblyInfo = {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-            .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-            .primitiveRestartEnable = VK_FALSE
-        };
-
-        // Tessellation (Skip)
-
-        // Dynamic State (Swapchain may change)
-        VkDynamicState dynamicStates[] = {
-            VK_DYNAMIC_STATE_VIEWPORT,
-            VK_DYNAMIC_STATE_SCISSOR
-        };
-        VkPipelineDynamicStateCreateInfo dynamicStateInfo = {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-            .dynamicStateCount = LEN(dynamicStates),
-            .pDynamicStates = dynamicStates
-        };
-
-        VkPipelineViewportStateCreateInfo viewportInfo = {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-            .viewportCount = 1,
-            .scissorCount = 1,
-        };
-
-        // Rasterization
-        VkPipelineRasterizationStateCreateInfo rasterizerInfo = {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-            .depthClampEnable = VK_TRUE,
-            .rasterizerDiscardEnable = VK_FALSE,
-            .polygonMode = VK_POLYGON_MODE_FILL,
-            .cullMode = VK_CULL_MODE_BACK_BIT,
-            .frontFace = VK_FRONT_FACE_CLOCKWISE,
-            .depthBiasEnable = VK_FALSE,
-            .lineWidth = 1.0f
-        };
-
-        // Multisample (antialiasing?, thought that was done in PP not per material, but cool...)
-        VkPipelineMultisampleStateCreateInfo multisampleInfo = {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-            .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
-            .sampleShadingEnable = VK_FALSE,
-        };
-
-        // DepthStencil (Skip)
-
-        // Color Blending
-        VkPipelineColorBlendAttachmentState blendAttachment = {
-            .blendEnable = VK_FALSE,
-            .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT
-        };
-
-        VkPipelineColorBlendStateCreateInfo blendStateInfo = {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-            .logicOpEnable = VK_FALSE,
-            .attachmentCount = 1,
-            .pAttachments = &blendAttachment
-        };
-
-        // Pipeline layout (descriptor sets)
-        VkDescriptorSetLayout layouts[] = {ubo_global_descriptor_set_layout, terrain->descriptor_set_layout};
-        VkPipelineLayoutCreateInfo pipelineLayoutInfo = {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-            .setLayoutCount = LEN(layouts),
-            .pSetLayouts = layouts
-        };
-        res = vkCreatePipelineLayout(ctx->device.handle, &pipelineLayoutInfo, NULL, &terrain->pipeline.layout);
-        assert(res == VK_SUCCESS);
-
-        VkGraphicsPipelineCreateInfo pipelineInfo = {
-            .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-            .stageCount = LEN(stages),
-            .pStages = stages,
-            .pVertexInputState = &vertexInputInfo,
-            .pInputAssemblyState = &inputAssemblyInfo,
-            // skipping tesselation
-            .pViewportState = &viewportInfo,
-            .pRasterizationState = &rasterizerInfo,
-            .pMultisampleState = &multisampleInfo,
-            // skipping stencil
-            .pColorBlendState = &blendStateInfo,
-            .pDynamicState = &dynamicStateInfo,
-            // skipping dynamic state
-            .layout = terrain->pipeline.layout,
-            .renderPass = ctx->renderPass,
-            .subpass = 0,
-        };
-        res = vkCreateGraphicsPipelines(ctx->device.handle, NULL/*TODO:cache required*/, 1, &pipelineInfo, NULL, &terrain->pipeline.handle);
-        assert(res == VK_SUCCESS);
-
-        // destroy shader modules once ctx->pipeline is created
-        for (int i = 0; i < LEN(stages); i++) {
-            vkDestroyShaderModule(ctx->device.handle, stages[i].module, NULL);
-        }
+        VkDescriptorSetLayout descriptor_set_layouts[] = {ubo_global_descriptor_set_layout, terrain->descriptor_set_layout};
+        terrain->pipelines = alloc_array(arena_permanent, VkPipeline, TERRAIN_PIPELINE_TYPE_COUNT);
+        terrain->pipeline_layouts = alloc_array(arena_permanent, VkPipelineLayout, TERRAIN_PIPELINE_TYPE_COUNT);
+        create_shaded_pipeline(ctx, 
+                descriptor_set_layouts, LEN(descriptor_set_layouts), 
+                vert_shader, frag_shader, 
+                false, 
+                &terrain->pipelines[TERRAIN_PIPELINE_SHADED],
+                &terrain->pipeline_layouts[TERRAIN_PIPELINE_SHADED]);
+        create_shaded_pipeline(ctx, 
+                descriptor_set_layouts, LEN(descriptor_set_layouts), 
+                vert_shader, frag_shader, 
+                true, 
+                &terrain->pipelines[TERRAIN_PIPELINE_WIREFRAME],
+                &terrain->pipeline_layouts[TERRAIN_PIPELINE_WIREFRAME]);
     }
 
     // allocate vertices
@@ -460,14 +496,6 @@ typedef enum {
 } TerrainNeighbourType;
 
 void terrain_fill_instance_data(camera_t* cam, terrain_instance_data_t* instance_data_buffer) {
-    //const lod_to_dist_params_t default_params = {
-    //    .min_lod_dist = GRID_SIZE * (sqrtf(2) + 0.01f),
-    //    .k = 0.15f
-    //};
-    float coarsest_dist = GRID_SIZE * 2; //* sqrtf(2.0f);
-    float finest_dist = coarsest_dist / (float)(1 << (LOD_COUNT - 1));
-    finest_dist *= 2.0f; // finest LOD radius tuning exp dropoff
-    lod_to_sq_dist_set_params(finest_dist);
     //printf("LOD distances\n");
     //for (u32 i = 0; i < LOD_COUNT; i++) {
     //    printf("%f ", sqrtf(lod_to_sq_dist_quantized_g[i]));
@@ -485,7 +513,7 @@ void terrain_fill_instance_data(camera_t* cam, terrain_instance_data_t* instance
         .x = corner_x, 
         .z = corner_z
     };
-    printf("qt root: %f, %f, cam: %f %f, grid size: %f\n", root.x, root.z, cam->transform.pos.x, cam->transform.pos.z, (float)GRID_SIZE);
+    //printf("qt root: %f, %f, cam: %f %f, grid size: %f\n", root.x, root.z, cam->transform.pos.x, cam->transform.pos.z, (float)GRID_SIZE);
 
     frustum_t f = camera_get_frustum(cam);
     instance_count_g = 0;
@@ -572,6 +600,13 @@ void terrain_render(VulkanCtx* ctx, game_state_t* game_state, terrain_gpu_t* ter
         frozen_cam = game_state->main_camera;
     } 
 
+    //vec3_print(game_state->main_camera.transform.pos, printf);
+
+    float coarsest_dist = GRID_SIZE * 2; //* sqrtf(2.0f);
+    float finest_dist = coarsest_dist / (float)(1 << (LOD_COUNT - 1));
+    finest_dist *= 2.0f; // finest LOD radius tuning exp dropoff
+    lod_to_sq_dist_set_params(finest_dist);
+
     // instance generation
     terrain_fill_instance_data(frozen ? &frozen_cam : &game_state->main_camera, instance_data_buffer_g);
     quicksort(instance_count_g, terrain_instance_compare_buf_index, terrain_instance_swap);
@@ -582,16 +617,35 @@ void terrain_render(VulkanCtx* ctx, game_state_t* game_state, terrain_gpu_t* ter
     noise->grid_size = GRID_SIZE*2;
     noise->y_scale = 15.0f;
 
-    vec2 p0, p1, p2, p3;
-    const bezier2d_t a_segments[] = {
-        {{0.0f, 0.0f}, {15.0f, 0.0f}, {15.0f, 0.0f}, {0.0f, 0.0f}},
+    const float weights[] = {0.65f, 0.25f, 0.1f};
+    bezier2d_t a_segments[] = {
+        {{0.0f, 0.0f}, {6.667f, 0.0f}, {12.33f, 0.03f}, {18, 0.03f}},
+        {{18, 0.03f}, {32.667f, 0.03f}, {47.33f, 0.03f}, {62, 0.03f}},
+        {{62, 0.03f}, {64.667f, 0.03f}, {67.33f, 0.378f}, {70, 0.378f}},
+        {{70, 0.378f}, {82.33f, 0.378f}, {94.667f, 0.378f}, {107, 0.378f}},
+        {{107, 0.378f}, {111.33f, 0.378f}, {115.667f, 0.882f}, {120, 0.887f}},
+        {{120, 0.887f}, {127.6f, 0.894f}, {126.667f, 0.895f}, {130, 0.9f}},
+        {{130, 0.9f}, {146, 0.948f}, {162.75f, 0.943f}, {178, 0.958f}},
+        {{178, 0.958f}, {196.75f, 0.977f}, {214, 0.981f}, {232, 1.0f}},
+        //{{0.0f, 0.0f}, {0.33f, 0.0f}, {0.66f, 1.0f}, {1.0f, 1.0f}}
     };
-    const bezier2d_t b_segments[] = {
-
+    for (u32 i = 0; i < LEN(a_segments); i++) {
+        a_segments[i] = bezier2d_scale(a_segments[i], 1.0/(a_segments[LEN(a_segments) - 1]).p3.x, TERRAIN_MAX_Y * weights[0]);
+        printf("%f ", a_segments[i].p0.x);
+    }
+    printf("\n");
+    bezier2d_t b_segments[] = {
+        //{{0.0f, 1.0f}, {0.33f, 1.0f}, {0.66f, 1.0f}, {1.0f, 1.0f}},
     };
-    const bezier2d_t c_segments[] = {
-
+    for (u32 i = 0; i < LEN(a_segments); i++) {
+        //bezier2d_scale(b_segments[i], 1.0/232, TERRAIN_MAX_Y * weights[1]);
+    }
+    bezier2d_t c_segments[] = {
+        //{{0.0f, 1.0f}, {0.33f, 1.0f}, {0.66f, 1.0f}, {1.0f, 1.0f}},
     };
+    for (u32 i = 0; i < LEN(c_segments); i++) {
+        //bezier2d_scale(b_segments[i], 1.0/232, TERRAIN_MAX_Y * weights[2]);
+    }
     UBO_terrain_noise_params_t* A = &noise->A;
     A->first_segment_index = 0;
     A->segment_count = LEN(a_segments);
@@ -602,13 +656,28 @@ void terrain_render(VulkanCtx* ctx, game_state_t* game_state, terrain_gpu_t* ter
     C->first_segment_index = A->segment_count + B->segment_count;
     C->segment_count = LEN(c_segments);
 
+    // write segments
     terrain_spline_segment_t* s = terrain->ssbo_spline_segments[frame].mapped;
+    for (u32 i = 0; i < LEN(a_segments); i++) {
+        s->curve = a_segments[i];
+        s++;
+    }
+    for (u32 i = 0; i < LEN(b_segments); i++) {
+        s->curve = b_segments[i];
+        s++;
+    }
+    for (u32 i = 0; i < LEN(c_segments); i++) {
+        s->curve = c_segments[i];
+        s++;
+    }
 
     // first to CPU buffer, also freq count
     //
 
+    TERRAIN_PIPELINE_TYPE selected_pipeline = game_state->show_wireframe ? TERRAIN_PIPELINE_WIREFRAME : TERRAIN_PIPELINE_SHADED;
+
     // Draw terrain
-    vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, terrain->pipeline.handle);
+    vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, terrain->pipelines[selected_pipeline]);
     // dynamic states
     VkViewport viewport = {
         .x = 0.0f,
@@ -626,7 +695,7 @@ void terrain_render(VulkanCtx* ctx, game_state_t* game_state, terrain_gpu_t* ter
     };
 
     VkDescriptorSet sets[] = {ubo_global_descriptor_set, terrain->descriptor_sets[frame]};
-    vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, terrain->pipeline.layout, 0, LEN(sets), sets, 0,  NULL);
+    vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, terrain->pipeline_layouts[selected_pipeline], 0, LEN(sets), sets, 0,  NULL);
 
     // patch geometry
     vkCmdSetScissor(cmd_buf, 0, 1, &scissor);
