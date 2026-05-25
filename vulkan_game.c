@@ -181,7 +181,7 @@ void create_and_set_new_swapchain(arena_t* swapchainArena, u32 imageCount, Vulka
 
         VkFramebufferCreateInfo framebufferInfo = {
             .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-            .renderPass = ctx->renderPass,
+            .renderPass = ctx->render_state.render_pass_main,
             .attachmentCount = 1,
             .pAttachments = &device->swapchain->imageViews[i],
             .width = physDevice->surfaceCapabilities.currentExtent.width,
@@ -480,6 +480,36 @@ vulkan_state_t* init_rendering(
             { .attachment = 0, .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL } // swapchain image view
         };
 
+        
+        
+        VkFormatProperties props;
+        vkGetPhysicalDeviceFormatProperties(ctx->physicalDevice.selected->handle, VK_FORMAT_D32_SFLOAT, &props);
+        assert(props.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
+
+        VkImageCreateInfo info = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .imageType = VK_IMAGE_TYPE_2D,
+            .format = VK_FORMAT_D32_SFLOAT,
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .tiling = VK_IMAGE_TILING_OPTIMAL,
+            .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+        };
+        info.extent.width = ctx->physicalDevice.selected->surfaceCapabilities.currentExtent.width;
+        info.extent.height = ctx->physicalDevice.selected->surfaceCapabilities.currentExtent.height;
+
+        VkImage image;
+        res = vkCreateImage(ctx->device.handle, &info, NULL, &image);
+
+        VkMemoryRequirements mem_reqs;
+        vkGetImageMemoryRequirements(ctx->device.handle, image, &mem_reqs);
+
+        gpu_arena_create(
+
+                
+
         VkSubpassDescription subpasses[] = {
             // main pass
             {
@@ -509,26 +539,26 @@ vulkan_state_t* init_rendering(
             .dependencyCount = 1,
             .pDependencies = &dependency
         };
-        res = vkCreateRenderPass(ctx->device.handle, &renderPassInfo, NULL, &ctx->renderPass);
+        res = vkCreateRenderPass(ctx->device.handle, &renderPassInfo, NULL, &ctx->render_state.render_pass_main);
         assert(res == VK_SUCCESS);
     }
 
     // Create heaps
-    ctx->heap_ubo_ssbo = gpu_heap_create(
+    ctx->arena_ubo_ssbo = gpu_buffer_arena_create(
             ctx->device.handle, 
             ctx->physicalDevice.selected->handle, 
             &ctx->physicalDevice.selected->props_memory, 
             MB(16), 
             VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    ctx->heap_staging = gpu_heap_create(
+    ctx->arena_staging = gpu_buffer_arena_create(
             ctx->device.handle, 
             ctx->physicalDevice.selected->handle, 
             &ctx->physicalDevice.selected->props_memory, 
             MB(16), 
             VK_BUFFER_USAGE_TRANSFER_SRC_BIT, 
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    ctx->heap_local_mesh = gpu_heap_create(
+    ctx->arena_local_mesh = gpu_buffer_arena_create(
             ctx->device.handle, 
             ctx->physicalDevice.selected->handle, 
             &ctx->physicalDevice.selected->props_memory, 
@@ -633,9 +663,9 @@ vulkan_state_t* init_rendering(
     // global uniforms
     {
         // buffer and mapping
-        state->ubo_global = alloc_array(arena_permanent, gpu_alloc_t, ctx->render_state.frames_in_flight);
+        state->ubo_global = alloc_array(arena_permanent, gpu_buffer_alloc_t, ctx->render_state.frames_in_flight);
         for (u32 i = 0; i < ctx->render_state.frames_in_flight; i++) {
-            state->ubo_global[i] = gpu_heap_alloc(&ctx->heap_ubo_ssbo, sizeof(UBO_global_t));
+            state->ubo_global[i] = gpu_buffer_arena_alloc(&ctx->arena_ubo_ssbo, sizeof(UBO_global_t));
         }
 
         // descriptor set
@@ -664,7 +694,7 @@ vulkan_state_t* init_rendering(
         VkDescriptorBufferInfo* buffer_info = alloc_array(arena_scratch, VkDescriptorBufferInfo, ctx->render_state.frames_in_flight);
         VkWriteDescriptorSet* writes = alloc_array(arena_scratch, VkWriteDescriptorSet, ctx->render_state.frames_in_flight);
         for (u32 i = 0; i < ctx->render_state.frames_in_flight; i++) {
-            buffer_info[i].buffer = state->ubo_global[i].heap->buffer,
+            buffer_info[i].buffer = state->ubo_global[i].arena->buffer,
                 buffer_info[i].offset = state->ubo_global[i].offset,
                 buffer_info[i].range = sizeof(UBO_global_t);
 
@@ -766,10 +796,10 @@ void render(vulkan_state_t* vulkan_state, game_state_t* game_state, float time) 
     assert(res == VK_SUCCESS);
 
 
-    VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
+    VkClearValue clearColor = {{{0.0f, 1.0f, 1.0f, 1.0f}}};
     VkRenderPassBeginInfo renderPassBeginInfo = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-        .renderPass = ctx->renderPass,
+        .renderPass = ctx->render_state.render_pass_main,
         .framebuffer = ctx->device.swapchain->framebuffers[state->curr_image_index],
         .renderArea.offset = {0,0},
         .renderArea.extent = ctx->physicalDevice.selected->surfaceCapabilities.currentExtent,

@@ -50,6 +50,8 @@ typedef struct {
     VkSemaphore* render_finished_semaphores;
     VkFence* in_flight_fences;
 
+    VkRenderPass render_pass_main;
+
     VkQueryPool query_pool_timestamp;
     VkCommandPool cmd_pool_graphics_auto_reset;
     VkCommandPool cmd_pool_graphics_transient;
@@ -73,13 +75,12 @@ typedef struct VulkanCtx {
 
     LogicalDevice device;
     VkSurfaceKHR surface;
-    VkRenderPass renderPass;
     // pools
     VkDescriptorPool descriptor_pool_permanent;
     // Heaps
-    gpu_heap_t heap_ubo_ssbo;
-    gpu_heap_t heap_staging;
-    gpu_heap_t heap_local_mesh;
+    gpu_buffer_arena_t arena_ubo_ssbo;
+    gpu_buffer_arena_t arena_staging;
+    gpu_buffer_arena_t arena_local_mesh;
 
     // frame-by-frame state
     render_state_t render_state;
@@ -99,9 +100,9 @@ typedef enum {
 } TERRAIN_PIPELINE_TYPE;
 
 typedef struct {
-    gpu_alloc_t gpu_mem_vertices;
+    gpu_buffer_alloc_t gpu_mem_vertices;
     u32 n_vertices;
-    gpu_alloc_t gpu_mem_indices[9];
+    gpu_buffer_alloc_t gpu_mem_indices[9];
     u32 n_indices[9];
 
     VkPipeline* pipelines;
@@ -111,9 +112,9 @@ typedef struct {
     VkDescriptorSetLayout descriptor_set_layout;
     // offset per frame 
     VkDescriptorSet* descriptor_sets;
-    gpu_alloc_t* ubo_noise;
-    gpu_alloc_t* ssbo_spline_segments;
-    gpu_alloc_t* ssbo_instance_data;
+    gpu_buffer_alloc_t* ubo_noise;
+    gpu_buffer_alloc_t* ssbo_spline_segments;
+    gpu_buffer_alloc_t* ssbo_instance_data;
 } terrain_gpu_t;
 
 typedef struct {
@@ -151,7 +152,7 @@ typedef struct {
     // global uniforms
     VkDescriptorSet* ubo_global_descriptor_sets;
     VkDescriptorSetLayout ubo_global_descriptor_set_layout;
-    gpu_alloc_t* ubo_global;
+    gpu_buffer_alloc_t* ubo_global;
     // terrain
     terrain_gpu_t terrain;
 } vulkan_state_t;

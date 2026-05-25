@@ -182,7 +182,7 @@ void create_shaded_pipeline(
         .pDynamicState = &dynamicStateInfo,
         // skipping dynamic state
         .layout = *out_layout,
-        .renderPass = ctx->renderPass,
+        .renderPass = ctx->render_state.render_pass_main,
         .subpass = 0,
     };
     // TODO: create all pipelines at once instead
@@ -204,16 +204,16 @@ void terrain_init(
         file_data_t vert_shader, 
         file_data_t frag_shader) 
 {
-    terrain->ubo_noise = alloc_array(arena_permanent, gpu_alloc_t, ctx->render_state.frames_in_flight);
-    terrain->ssbo_spline_segments = alloc_array(arena_permanent, gpu_alloc_t, ctx->render_state.frames_in_flight);
-    terrain->ssbo_instance_data = alloc_array(arena_permanent, gpu_alloc_t, ctx->render_state.frames_in_flight);
+    terrain->ubo_noise = alloc_array(arena_permanent, gpu_buffer_alloc_t, ctx->render_state.frames_in_flight);
+    terrain->ssbo_spline_segments = alloc_array(arena_permanent, gpu_buffer_alloc_t, ctx->render_state.frames_in_flight);
+    terrain->ssbo_instance_data = alloc_array(arena_permanent, gpu_buffer_alloc_t, ctx->render_state.frames_in_flight);
     for (u32 i = 0; i < ctx->render_state.frames_in_flight; i++) {
         // alloc uniform buffer (one for each frame)
-        terrain->ubo_noise[i] = gpu_heap_alloc(&ctx->heap_ubo_ssbo, sizeof(UBO_terrain_noise_t));
+        terrain->ubo_noise[i] = gpu_buffer_arena_alloc(&ctx->arena_ubo_ssbo, sizeof(UBO_terrain_noise_t));
         // alloc spline segment buffer (for terrain shaping)
-        terrain->ssbo_spline_segments[i] = gpu_heap_alloc(&ctx->heap_ubo_ssbo, sizeof(terrain_spline_segment_t) * TERRAIN_MAX_SPLINE_SEGMENTS);
+        terrain->ssbo_spline_segments[i] = gpu_buffer_arena_alloc(&ctx->arena_ubo_ssbo, sizeof(terrain_spline_segment_t) * TERRAIN_MAX_SPLINE_SEGMENTS);
         // alloc instance data buffer
-        terrain->ssbo_instance_data[i] = gpu_heap_alloc(&ctx->heap_ubo_ssbo, sizeof(terrain_instance_data_t) * TERRAIN_MAX_INSTANCES);
+        terrain->ssbo_instance_data[i] = gpu_buffer_arena_alloc(&ctx->arena_ubo_ssbo, sizeof(terrain_instance_data_t) * TERRAIN_MAX_INSTANCES);
     }
 
     VkResult res;
@@ -264,17 +264,17 @@ void terrain_init(
         // (should obviously match the layout binding that we will put in the pipeline)
         for (int i = 0; i < ctx->render_state.frames_in_flight; i++) {
             VkDescriptorBufferInfo ubo_buffer_info = {
-                .buffer = terrain->ubo_noise[i].heap->buffer,
+                .buffer = terrain->ubo_noise[i].arena->buffer,
                 .offset = terrain->ubo_noise[i].offset,
                 .range = sizeof(UBO_terrain_noise_t)
             };
             VkDescriptorBufferInfo ssbo_spline_segments_buffer_info = {
-                .buffer = terrain->ssbo_spline_segments[i].heap->buffer,
+                .buffer = terrain->ssbo_spline_segments[i].arena->buffer,
                 .offset = terrain->ssbo_spline_segments[i].offset,
                 .range = sizeof(terrain_spline_segment_t) * TERRAIN_MAX_SPLINE_SEGMENTS
             };
             VkDescriptorBufferInfo ssbo_buffer_info = {
-                .buffer = terrain->ssbo_instance_data[i].heap->buffer,
+                .buffer = terrain->ssbo_instance_data[i].arena->buffer,
                 .offset = terrain->ssbo_instance_data[i].offset,
                 .range = VK_WHOLE_SIZE
             };
@@ -358,11 +358,11 @@ void terrain_init(
         u64 size_vertices = sizeof(*vertices) * terrain->n_vertices;
         u64 size_indices = sizeof(*indices) * n_total_indices;
 
-        gpu_alloc_t staging_vertices = gpu_heap_alloc(&ctx->heap_staging, size_vertices);
-        gpu_alloc_t staging_indices = gpu_heap_alloc_unaligned(&ctx->heap_staging, size_indices);
-        terrain->gpu_mem_vertices = gpu_heap_alloc(&ctx->heap_local_mesh, size_vertices);
+        gpu_buffer_alloc_t staging_vertices = gpu_buffer_arena_alloc(&ctx->arena_staging, size_vertices);
+        gpu_buffer_alloc_t staging_indices = gpu_buffer_arena_alloc_unaligned(&ctx->arena_staging, size_indices);
+        terrain->gpu_mem_vertices = gpu_buffer_arena_alloc(&ctx->arena_local_mesh, size_vertices);
         for (u32 i = 0; i < 9; i++) {
-            terrain->gpu_mem_indices[i] = gpu_heap_alloc_unaligned(&ctx->heap_local_mesh, terrain->n_indices[i] * sizeof(*indices));
+            terrain->gpu_mem_indices[i] = gpu_buffer_arena_alloc_unaligned(&ctx->arena_local_mesh, terrain->n_indices[i] * sizeof(*indices));
         }
 
         memcpy(staging_vertices.mapped, vertices, size_vertices);
@@ -371,12 +371,12 @@ void terrain_init(
         // upload
         staging_buffer_upload_t upload_info = {
             .copyRegion = (VkBufferCopy){staging_vertices.offset, terrain->gpu_mem_vertices.offset, size_vertices + size_indices},
-            .src = staging_vertices.heap->buffer,
-            .dst = terrain->gpu_mem_vertices.heap->buffer
+            .src = staging_vertices.arena->buffer,
+            .dst = terrain->gpu_mem_vertices.arena->buffer
         };
         upload_staging_buffer(ctx, &upload_info);
     }
-    gpu_heap_reset(&ctx->heap_staging);
+    gpu_buffer_arena_reset(&ctx->arena_staging);
     arena_reset(arena_scratch);
 }
 
@@ -699,18 +699,18 @@ void terrain_render(VulkanCtx* ctx, game_state_t* game_state, terrain_gpu_t* ter
 
     // patch geometry
     vkCmdSetScissor(cmd_buf, 0, 1, &scissor);
-    VkBuffer vertex_buffers[] = {terrain->gpu_mem_vertices.heap->buffer};
+    VkBuffer vertex_buffers[] = {terrain->gpu_mem_vertices.arena->buffer};
     VkDeviceSize offsets[] = {0};
     vkCmdBindVertexBuffers(cmd_buf, 0, 1, vertex_buffers, offsets);
     u32 instance_count_acc = 0;
 
     for (u32 i = 0; i < 9; i++) {
         u64 index_offset = terrain->gpu_mem_indices[i].offset;
-        vkCmdBindIndexBuffer(cmd_buf, terrain->gpu_mem_indices[i].heap->buffer, index_offset, VK_INDEX_TYPE_UINT16);
+        vkCmdBindIndexBuffer(cmd_buf, terrain->gpu_mem_indices[i].arena->buffer, index_offset, VK_INDEX_TYPE_UINT16);
         u64 instance_count = instance_index_buf_freq_count_g[i];
         vkCmdDrawIndexed(cmd_buf, terrain->n_indices[i], instance_count, 0, 0, instance_count_acc);
         instance_count_acc += instance_count;
     }
-    //vkCmdBindIndexBuffer(cmd_buf, terrain->gpu_mem_indices.heap->buffer, terrain->gpu_mem_indices.offset, VK_INDEX_TYPE_UINT16);
+    //vkCmdBindIndexBuffer(cmd_buf, terrain->gpu_mem_indices.arena->buffer, terrain->gpu_mem_indices.offset, VK_INDEX_TYPE_UINT16);
     //vkCmdDrawIndexed(cmd_buf, terrain->n_indices, instance_count_g, 0, 0, 0);
 }

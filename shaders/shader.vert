@@ -189,7 +189,7 @@ void main() {
     // B and C: normal fbm
     // for each loop over segments, starting at starting index, n times
     //evaluate poly a, b, c, d multiplying by step with hi, lo and summing
-    float a = smoothstep(0.1, 0.9, fbm2(world_pos_xz * 0.01, 0.5, 2));
+    float a = smoothstep(0.1, 0.9, fbm2(world_pos_xz * 0.005, 0.5, 3));
     float b = smoothstep(0.2, 0.8, fbm2(world_pos_xz * 0.02, 0.5, 2));
     float c = smoothstep(0.2, 0.8, fbm2(world_pos_xz * 0.5, 0.5, 1));
     c *= c;
