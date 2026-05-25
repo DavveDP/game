@@ -8,7 +8,7 @@ typedef struct {
 
 #define TERRAIN_MAX_INSTANCES 4096
 #define TERRAIN_MAX_SPLINE_SEGMENTS 128 // across all terrain splines
-#define GRID_SIZE 256
+#define GRID_SIZE 2048
 #define TERRAIN_MAX_Y 150
 #define LOD_COUNT 10
 
@@ -623,17 +623,17 @@ void terrain_render(VulkanCtx* ctx, game_state_t* game_state, terrain_gpu_t* ter
         {{18, 0.03f}, {32.667f, 0.03f}, {47.33f, 0.03f}, {62, 0.03f}},
         {{62, 0.03f}, {64.667f, 0.03f}, {67.33f, 0.378f}, {70, 0.378f}},
         {{70, 0.378f}, {82.33f, 0.378f}, {94.667f, 0.378f}, {107, 0.378f}},
-        {{107, 0.378f}, {111.33f, 0.378f}, {115.667f, 0.882f}, {120, 0.887f}},
-        {{120, 0.887f}, {127.6f, 0.894f}, {126.667f, 0.895f}, {130, 0.9f}},
-        {{130, 0.9f}, {146, 0.948f}, {162.75f, 0.943f}, {178, 0.958f}},
+        {{107, 0.378f}, {111.33f, 0.378f}, {115.667f, 0.886f}, {120, 0.887f}},
+        {{120, 0.887f}, {123.31f, 0.887f}, {125.907f, 0.9f}, {130, 0.904f}},
+        {{130, 0.904f}, {146, 0.948f}, {162.75f, 0.943f}, {178, 0.958f}},
         {{178, 0.958f}, {196.75f, 0.977f}, {214, 0.981f}, {232, 1.0f}},
         //{{0.0f, 0.0f}, {0.33f, 0.0f}, {0.66f, 1.0f}, {1.0f, 1.0f}}
     };
     for (u32 i = 0; i < LEN(a_segments); i++) {
         a_segments[i] = bezier2d_scale(a_segments[i], 1.0/(a_segments[LEN(a_segments) - 1]).p3.x, TERRAIN_MAX_Y * weights[0]);
-        printf("%f ", a_segments[i].p0.x);
+        ////printf("%u: [p0.x: %f p1.x: %f]", i, a_segments[i].p0.x, a_segments[i].p3.x);
     }
-    printf("\n");
+    //printf("\n");
     bezier2d_t b_segments[] = {
         //{{0.0f, 1.0f}, {0.33f, 1.0f}, {0.66f, 1.0f}, {1.0f, 1.0f}},
     };

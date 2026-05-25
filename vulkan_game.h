@@ -1,9 +1,13 @@
+// TODO: Current Physical device should have its own arena 
+// that can be reset on device swap
 typedef struct PhysicalDevice {
     VkPhysicalDevice handle;
     VkPhysicalDeviceProperties props;
     VkPhysicalDeviceMemoryProperties props_memory;
     //VkFormatProperties props_format;
     u32 presentIndex;
+
+    gpu_arena_pool_t gpu_arena_pool; // one for each props.memoryTypes
 
     struct {
         u32 index;
@@ -31,6 +35,12 @@ typedef struct Swapchain {
     VkImageView* imageViews;
     VkFramebuffer* framebuffers;
     u32 imageCount;
+
+    // screen-size attachments - same lifetime as swapchain
+    VkImage image_depth_buffer;
+    VkImageView image_view_depth_buffer;
+    gpu_arena_alloc_t gpu_mem_depth_buffer;
+    gpu_arena_t arena_depth_buf;
 } Swapchain;
 
 typedef struct LogicalDevice {
@@ -39,8 +49,11 @@ typedef struct LogicalDevice {
         VkQueue graphics;
         VkQueue present;
     } queueHandles;
-    Swapchain* swapchain;
-    block_alloc_t swapchain_allocator;
+    struct {
+        Swapchain* current;
+        gpu_arena_t arena_depth_buf;
+        block_alloc_t allocator;
+    } swapchain;
 } LogicalDevice;
 
 typedef struct {
@@ -51,7 +64,6 @@ typedef struct {
     VkFence* in_flight_fences;
 
     VkRenderPass render_pass_main;
-
     VkQueryPool query_pool_timestamp;
     VkCommandPool cmd_pool_graphics_auto_reset;
     VkCommandPool cmd_pool_graphics_transient;

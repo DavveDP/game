@@ -3,6 +3,11 @@
 layout(set = 0, binding = 0) uniform UBO_Global {
     mat4 proj;
     mat4 view;
+    vec3 sun_dir;
+    vec3 sun_col;
+    vec3 sky_col;
+    float fog_start;
+    float fog_end;
     float time;
 } ubo_global;
 
@@ -46,6 +51,8 @@ layout(set = 1, binding = 2) readonly buffer InstanceBuffer {
 // pipeline in/out
 layout(location = 0) in vec3 inPosition;
 layout(location = 0) out vec3 fragColor;
+layout(location = 1) out vec3 fragNormal;
+layout(location = 2) out float fragCamDist;
 
 float hash3_1(vec3 p) {
     p = fract(p * 0.3183099 + 0.1);
@@ -168,10 +175,22 @@ float eval_spline(uint start_index, uint count, float x) {
             3.0 * t_1 * t * t * s.p2.y +
             t * t * t * s.p3.y;
 
-        float m = step(lo, x) * step(x, hi); // masks the segment
+        float m = step(lo, x) * (1.0 - step(hi, x)); // masks the segment
         height += m*y;
         index++;
     }
+    return height;
+}
+
+float sample_height(vec2 pos) {
+    float a = smoothstep(0.1, 0.9, fbm2(pos * 0.005, 0.5, 3));
+    float b = smoothstep(0.2, 0.8, fbm2(pos * 0.02, 0.5, 2));
+    float c = smoothstep(0.2, 0.8, fbm2(pos * 0.5, 0.5, 1));
+    c *= c;
+    float height = 0.0;
+    height += eval_spline(ubo_terrain.A.first_segment_index, ubo_terrain.A.segment_count, a);
+    //height += b;//eval_spline(ubo_terrain.B.first_segment_index, ubo_terrain.B.segment_count, b);
+    //height += c;//eval_spline(ubo_terrain.C.first_segment_index, ubo_terrain.C.segment_count, c);
     return height;
 }
 
@@ -181,54 +200,29 @@ void main() {
     vec2 patch_origin = vec2(id.x, id.z);           // patch origin is in the center of the patch
     vec2 world_pos_xz = patch_origin + inPosition.xz * id.size; // assume model origin is also in the center of the geometry
 
+    // y offset and normal
+    float height = sample_height(world_pos_xz);
+    float eps    = id.size * 0.005;
+    float hR     = sample_height(world_pos_xz + vec2(eps, 0.0));
+    float hU     = sample_height(world_pos_xz + vec2(0.0, eps));
+    fragNormal   = normalize(vec3(-(hR - height), 2.0 * eps, -(hU - height)));
 
-    // noise (y offset)
+    // color
+    float slope = 1.0 - fragNormal.y; // 0 = flat, 1 = vertical cliff
+    vec3 color_grass = vec3(0.25, 0.42, 0.18);
+    vec3 color_rock  = vec3(0.45, 0.40, 0.35);
+    vec3 color_snow  = vec3(0.9,  0.92, 0.95);
+    vec3 color_sand  = vec3(0.76, 0.70, 0.50);
 
-    // for each noise (A, B, C) unrolled (using H and octaves, and random offset)
-    // A: lower freq, domain warp
-    // B and C: normal fbm
-    // for each loop over segments, starting at starting index, n times
-    //evaluate poly a, b, c, d multiplying by step with hi, lo and summing
-    float a = smoothstep(0.1, 0.9, fbm2(world_pos_xz * 0.005, 0.5, 3));
-    float b = smoothstep(0.2, 0.8, fbm2(world_pos_xz * 0.02, 0.5, 2));
-    float c = smoothstep(0.2, 0.8, fbm2(world_pos_xz * 0.5, 0.5, 1));
-    c *= c;
+    vec3 terrain_color = color_grass;
+    terrain_color = mix(terrain_color, color_sand, smoothstep(2.0,  0.5,  height)); // low = sand
+    terrain_color = mix(terrain_color, color_rock, smoothstep(0.3,  0.6,  slope));  // steep = rock
+    terrain_color = mix(terrain_color, color_snow, smoothstep(80.0, 120.0, height)); // high = snow
+    fragColor = terrain_color;
 
-
-
-    // use spline-based height functions
-    float height = 0.0;
-    height += eval_spline(ubo_terrain.A.first_segment_index, ubo_terrain.A.segment_count, a);
-    //height += b;//eval_spline(ubo_terrain.B.first_segment_index, ubo_terrain.B.segment_count, b);
-    //height += c;//eval_spline(ubo_terrain.C.first_segment_index, ubo_terrain.C.segment_count, c);
-
-    float s =
-        step(0.077586, a) +
-        step(0.267241, a) +
-        step(0.301724, a) +
-        step(0.461207, a) +
-        step(0.517241, a) +
-        step(0.560345, a) +
-        step(0.767241, a);
-
-    vec3 colors[8] = vec3[](
-            vec3(1,0,0), // seg0 (red)
-            vec3(1,0.5,0), // orange
-            vec3(1,1,0), // yellow
-            vec3(0,1,0), // green
-            vec3(0,1,1), // cyan
-            vec3(0,0,1), // blue
-            vec3(1,0,1), // magenta
-            vec3(1,1,1)  // seg7 (white)
-            );
-
-
-
-    fragColor = vec3(colors[int(s)]);
-
-    //float height = b;
-
-    gl_Position = ubo_global.proj * ubo_global.view * vec4(world_pos_xz.x, height, world_pos_xz.y, 1.0);
+    vec4 view = ubo_global.view * vec4(world_pos_xz.x, height, world_pos_xz.y, 1.0);
+    fragCamDist = length(vec3(view));
+    gl_Position = ubo_global.proj * view;
 
     //fragColor = vec3(0.2, 0.8, 0.2);
 }

@@ -58,7 +58,7 @@ void vulkan_create_logical_device(VulkanCtx* ctx) {
     assert(res == VK_SUCCESS);
     vkGetDeviceQueue(ctx->device.handle, physDevice->graphicsQF.index, 0, &ctx->device.queueHandles.graphics);
     vkGetDeviceQueue(ctx->device.handle, physDevice->presentQF.index, 0, &ctx->device.queueHandles.present);
-    ctx->device.swapchain = NULL;
+    ctx->device.swapchain.current = NULL;
 }
 
 u32 get_surface_capabilities_image_count(VulkanCtx* ctx) {
@@ -138,7 +138,7 @@ void create_and_set_new_swapchain(arena_t* swapchainArena, u32 imageCount, Vulka
         .compositeAlpha =        VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
         .presentMode =           physDevice->presentMode,
         .clipped =               VK_TRUE,
-        .oldSwapchain =          device->swapchain ? device->swapchain->handle : VK_NULL_HANDLE
+        .oldSwapchain =          device->swapchain.current ? device->swapchain.current->handle : VK_NULL_HANDLE
     };
     // if graphics and presents are from different queue indices
     if (device->queueHandles.graphics != device->queueHandles.present) {
@@ -148,24 +148,69 @@ void create_and_set_new_swapchain(arena_t* swapchainArena, u32 imageCount, Vulka
         createInfo.pQueueFamilyIndices = indices;
     }
 
-    device->swapchain = (Swapchain*)alloc(swapchainArena, Swapchain);
-    VkResult res = vkCreateSwapchainKHR(device->handle, &createInfo, NULL, &device->swapchain->handle);
+    device->swapchain.current = (Swapchain*)alloc(swapchainArena, Swapchain);
+    VkResult res = vkCreateSwapchainKHR(device->handle, &createInfo, NULL, &device->swapchain.current->handle);
 
-    assert(device->swapchain->handle != VK_NULL_HANDLE);
+    assert(device->swapchain.current->handle != VK_NULL_HANDLE);
     assert(res == VK_SUCCESS);
 
     // create images, views and framebuffers
-    res = vkGetSwapchainImagesKHR(device->handle, device->swapchain->handle, &imageCount, NULL);
+    res = vkGetSwapchainImagesKHR(device->handle, device->swapchain.current->handle, &imageCount, NULL);
     assert(res == VK_SUCCESS);
-    device->swapchain->images = alloc_array(swapchainArena, VkImage, imageCount);
-    device->swapchain->imageViews = alloc_array(swapchainArena, VkImageView, imageCount);
-    device->swapchain->framebuffers = alloc_array(swapchainArena, VkFramebuffer, imageCount);
-    res = vkGetSwapchainImagesKHR(device->handle, device->swapchain->handle, &imageCount, device->swapchain->images);
+    device->swapchain.current->images = alloc_array(swapchainArena, VkImage, imageCount);
+    device->swapchain.current->imageViews = alloc_array(swapchainArena, VkImageView, imageCount);
+    device->swapchain.current->framebuffers = alloc_array(swapchainArena, VkFramebuffer, imageCount);
+    res = vkGetSwapchainImagesKHR(device->handle, device->swapchain.current->handle, &imageCount, device->swapchain.current->images);
     assert(res == VK_SUCCESS);
+
+    // depth buffer, sized to extent
+    VkFormatProperties props;
+    vkGetPhysicalDeviceFormatProperties(ctx->physicalDevice.selected->handle, VK_FORMAT_D32_SFLOAT, &props);
+    assert(props.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
+    VkExtent2D extent = ctx->physicalDevice.selected->surfaceCapabilities.currentExtent;
+    VkImageCreateInfo depth_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = VK_FORMAT_D32_SFLOAT,
+        .extent = { extent.width, extent.height, 1 },
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+    };
+    res = vkCreateImage(ctx->device.handle, &depth_info, NULL, &device->swapchain.current->image_depth_buffer);
+    assert(res == VK_SUCCESS);
+
+    VkMemoryRequirements mem_reqs;
+    vkGetImageMemoryRequirements(ctx->device.handle, device->swapchain.current->image_depth_buffer, &mem_reqs);
+
+    gpu_arena_reset(&device->swapchain.arena_depth_buf);
+    device->swapchain.current->gpu_mem_depth_buffer = gpu_arena_suballoc(
+            &device->swapchain.arena_depth_buf,
+            mem_reqs.size,
+            mem_reqs.alignment);
+
+    gpu_arena_alloc_bind_image(&device->swapchain.current->gpu_mem_depth_buffer, ctx->device.handle, device->swapchain.current->image_depth_buffer);
+
+    VkImageViewCreateInfo depth_view_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = device->swapchain.current->image_depth_buffer,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format = VK_FORMAT_D32_SFLOAT,
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+            .levelCount = 1,
+            .layerCount = 1
+        }
+    };
+    vkCreateImageView(device->handle, &depth_view_info, NULL, &device->swapchain.current->image_view_depth_buffer);
+
     for (int i = 0; i < imageCount; i++) {
         VkImageViewCreateInfo imageViewInfo = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-            .image = device->swapchain->images[i],
+            .image = device->swapchain.current->images[i],
             .viewType = VK_IMAGE_VIEW_TYPE_2D,
             .format = physDevice->formats.selected.format,
             .subresourceRange = {
@@ -176,31 +221,37 @@ void create_and_set_new_swapchain(arena_t* swapchainArena, u32 imageCount, Vulka
                 .layerCount = 1
             }
         };
-        res = vkCreateImageView(device->handle, &imageViewInfo, NULL, &device->swapchain->imageViews[i]);
+        res = vkCreateImageView(device->handle, &imageViewInfo, NULL, &device->swapchain.current->imageViews[i]);
         assert(res == VK_SUCCESS);
 
+        VkImageView attachments[] = {
+            device->swapchain.current->imageViews[i],
+            device->swapchain.current->image_view_depth_buffer // same depth for all frames
+        };
         VkFramebufferCreateInfo framebufferInfo = {
             .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
             .renderPass = ctx->render_state.render_pass_main,
-            .attachmentCount = 1,
-            .pAttachments = &device->swapchain->imageViews[i],
-            .width = physDevice->surfaceCapabilities.currentExtent.width,
-            .height = physDevice->surfaceCapabilities.currentExtent.height,
+            .attachmentCount = LEN(attachments),
+            .pAttachments = attachments,
+            .width = extent.width,
+            .height = extent.height,
             .layers = 1
         };
-        res = vkCreateFramebuffer(device->handle, &framebufferInfo, NULL, &device->swapchain->framebuffers[i]);
+        res = vkCreateFramebuffer(device->handle, &framebufferInfo, NULL, &device->swapchain.current->framebuffers[i]);
         assert(res == VK_SUCCESS);
     }
-    device->swapchain->imageCount = imageCount;
+    device->swapchain.current->imageCount = imageCount;
 };
 
-void destroy_swapchain(VkDevice handle, Swapchain* swapchain) {
-    for (int i = 0; i < swapchain->imageCount; i++) {
-        vkDestroyFramebuffer(handle, swapchain->framebuffers[i], NULL);
-        vkDestroyImageView(handle, swapchain->imageViews[i], NULL);
+void destroy_swapchain(VkDevice device, Swapchain* old) {
+    for (int i = 0; i < old->imageCount; i++) {
+        vkDestroyFramebuffer(device, old->framebuffers[i], NULL);
+        vkDestroyImageView(device, old->imageViews[i], NULL);
         // images destroyed as part of the swapchain
     }
-    vkDestroySwapchainKHR(handle, swapchain->handle, NULL);
+    vkDestroyImageView(device, old->image_view_depth_buffer, NULL);
+    vkDestroyImage(device, old->image_depth_buffer, NULL);
+    vkDestroySwapchainKHR(device, old->handle, NULL);
 }
 
 // TODO: use vulkan allocator to allocate memory
@@ -264,6 +315,15 @@ void allocate_descriptor_sets(arena_t* scratch, VkDevice device, VkDescriptorPoo
     assert(res == VK_SUCCESS);
 }
 
+VkMemoryRequirements get_image_mem_reqs(VkDevice device, VkImageCreateInfo* info) {
+    VkMemoryRequirements reqs;
+    VkImage dummy;
+    vkCreateImage(device, info, NULL, &dummy);
+    vkGetImageMemoryRequirements(device, dummy, &reqs);
+    vkDestroyImage(device, dummy, NULL);
+    return reqs;
+}
+
 VkShaderModule create_shader_module(VkDevice device, const u32* code, size_t codeSize, VkResult* res) {
     VkShaderModuleCreateInfo info = {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
@@ -282,6 +342,11 @@ VkShaderModule create_shader_module(VkDevice device, const u32* code, size_t cod
 typedef struct {
     alignas(16) mat4 proj;
     alignas(16) mat4 view; // camera
+    alignas(16) vec3 sun_dir;
+    alignas(16) vec3 sun_col;
+    alignas(16) vec3 sky_col;
+    alignas(4) float fog_start;
+    alignas(4) float fog_end;
     alignas(4) float time;
 } UBO_global_t;
 
@@ -340,7 +405,6 @@ vulkan_state_t* init_rendering(
 
             validDevice->handle = handles[i];
             vkGetPhysicalDeviceProperties(handles[i], &validDevice->props);
-            vkGetPhysicalDeviceMemoryProperties(handles[i], &validDevice->props_memory);
             u32 propCount;
             vkEnumerateDeviceExtensionProperties(handles[i], NULL, &propCount, NULL);
             VkExtensionProperties* extProps = alloc_array(arena_scratch, VkExtensionProperties, propCount);
@@ -408,6 +472,7 @@ vulkan_state_t* init_rendering(
                 }
             }
 
+
             // present mode
             u32 nPresentModes;
             res = vkGetPhysicalDeviceSurfacePresentModesKHR(handles[i], ctx->surface, &nPresentModes, NULL);
@@ -425,6 +490,11 @@ vulkan_state_t* init_rendering(
             VkPhysicalDeviceFeatures features;
             vkGetPhysicalDeviceFeatures(handles[i], &features);
             if (!features.fillModeNonSolid) continue;
+
+            // memory requirements and pool init
+            vkGetPhysicalDeviceMemoryProperties(handles[i], &validDevice->props_memory);
+            validDevice->gpu_arena_pool.arena_count = validDevice->props_memory.memoryTypeCount;
+            validDevice->gpu_arena_pool.arenas = alloc_array(arena_permanent, gpu_arena_t, validDevice->props_memory.memoryTypeCount);
 
             // this is a valid device
             //printf("Found device: %s\n", validDevice->props.deviceName);
@@ -462,6 +532,7 @@ vulkan_state_t* init_rendering(
 
     // create render pass
     {
+
         VkAttachmentDescription attachments[] = {
             // swapchain image view
             {
@@ -473,6 +544,17 @@ vulkan_state_t* init_rendering(
                 .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
                 .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
                 .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+            },
+            // depth buffer
+            {
+                .format = VK_FORMAT_D32_SFLOAT,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
             }
         };
 
@@ -480,42 +562,17 @@ vulkan_state_t* init_rendering(
             { .attachment = 0, .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL } // swapchain image view
         };
 
-        
-        
-        VkFormatProperties props;
-        vkGetPhysicalDeviceFormatProperties(ctx->physicalDevice.selected->handle, VK_FORMAT_D32_SFLOAT, &props);
-        assert(props.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
-
-        VkImageCreateInfo info = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .imageType = VK_IMAGE_TYPE_2D,
-            .format = VK_FORMAT_D32_SFLOAT,
-            .mipLevels = 1,
-            .arrayLayers = 1,
-            .samples = VK_SAMPLE_COUNT_1_BIT,
-            .tiling = VK_IMAGE_TILING_OPTIMAL,
-            .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+        VkAttachmentReference depth_attach_ref = {
+            .attachment = 1, .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
         };
-        info.extent.width = ctx->physicalDevice.selected->surfaceCapabilities.currentExtent.width;
-        info.extent.height = ctx->physicalDevice.selected->surfaceCapabilities.currentExtent.height;
 
-        VkImage image;
-        res = vkCreateImage(ctx->device.handle, &info, NULL, &image);
-
-        VkMemoryRequirements mem_reqs;
-        vkGetImageMemoryRequirements(ctx->device.handle, image, &mem_reqs);
-
-        gpu_arena_create(
-
-                
 
         VkSubpassDescription subpasses[] = {
-            // main pass
             {
                 .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
                 .colorAttachmentCount = 1,
-                .pColorAttachments = colorAttachmentRefs
+                .pColorAttachments = colorAttachmentRefs,
+                .pDepthStencilAttachment = &depth_attach_ref
             }
         };
 
@@ -525,10 +582,10 @@ vulkan_state_t* init_rendering(
         VkSubpassDependency dependency = {
             .srcSubpass = VK_SUBPASS_EXTERNAL,
             .dstSubpass = 0,
-            .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-            .srcAccessMask = 0,
-            .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-            .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+            .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+            .srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+            .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
         };
         VkRenderPassCreateInfo renderPassInfo = {
             .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
@@ -543,7 +600,7 @@ vulkan_state_t* init_rendering(
         assert(res == VK_SUCCESS);
     }
 
-    // Create heaps
+    // buffer arenas 
     ctx->arena_ubo_ssbo = gpu_buffer_arena_create(
             ctx->device.handle, 
             ctx->physicalDevice.selected->handle, 
@@ -565,6 +622,39 @@ vulkan_state_t* init_rendering(
             MB(16), 
             VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    // create swapchain depth buffer arena
+    {
+        // arena for depth images I guess
+        VkImageCreateInfo image_info = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .imageType = VK_IMAGE_TYPE_2D,
+            .format = VK_FORMAT_D32_SFLOAT,
+            .extent = { 1, 1, 1 }, // size doesn't affect memory type, only alignment/size
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .tiling = VK_IMAGE_TILING_OPTIMAL,
+            .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+        };
+        VkMemoryRequirements mem_reqs = get_image_mem_reqs(ctx->device.handle, &image_info);
+        gpu_arena_init(
+                &ctx->physicalDevice.selected->gpu_arena_pool, 
+                ctx->device.handle, 
+                &ctx->physicalDevice.selected->props_memory, 
+                &mem_reqs,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                MB(256)); // not sure here tbh
+        ctx->device.swapchain.arena_depth_buf = gpu_arena_alloc_subarena(
+                &ctx->physicalDevice.selected->gpu_arena_pool, 
+                ctx->device.handle,
+                &ctx->physicalDevice.selected->props_memory, 
+                &mem_reqs,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                MB(16));
+    }
+
 
     // command pools
     {
@@ -629,12 +719,12 @@ vulkan_state_t* init_rendering(
         size_t nBlocks = ctx->render_state.frames_in_flight + 1; // replace with max images
         size_t blockSize = get_swapchain_size(ctx->render_state.image_count);
         //printf("initializing block alloc\n");
-        ctx->device.swapchain_allocator = block_alloc_create(
+        ctx->device.swapchain.allocator = block_alloc_create(
                 alloc_array_aligned(arena_permanent, u8, block_alloc_bytes_required(blockSize, nBlocks), alignof(Swapchain)),
                 nBlocks,
                 blockSize);
 
-        arena_t temp = arena_create(block_alloc(&ctx->device.swapchain_allocator), blockSize);
+        arena_t temp = arena_create(block_alloc(&ctx->device.swapchain.allocator), blockSize);
         //printf("creating swapchain\n");
         create_and_set_new_swapchain(&temp, ctx->render_state.image_count, ctx);
     }
@@ -673,7 +763,7 @@ vulkan_state_t* init_rendering(
             .binding = 0,
             .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
             .descriptorCount = 1,
-            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT
+            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT
         };
         VkDescriptorSetLayoutCreateInfo info = {
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -738,20 +828,20 @@ void render(vulkan_state_t* vulkan_state, game_state_t* game_state, float time) 
     if (state->recreate_swapchain || 
             (res = vkAcquireNextImageKHR(
                                          ctx->device.handle, 
-                                         ctx->device.swapchain->handle, UINT64_MAX, 
+                                         ctx->device.swapchain.current->handle, UINT64_MAX, 
                                          imageAvailableSemaphore, VK_NULL_HANDLE, &state->curr_image_index)) == VK_ERROR_OUT_OF_DATE_KHR) 
     {
         vkDeviceWaitIdle(ctx->device.handle);
         // update capabilities (extents)
         res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(ctx->physicalDevice.selected->handle, ctx->surface, &ctx->physicalDevice.selected->surfaceCapabilities);
         // create new (transition from old)
-        arena_t temp = arena_create(block_alloc(&ctx->device.swapchain_allocator), ctx->device.swapchain_allocator.blockSize);
-        Swapchain* old = ctx->device.swapchain;
+        arena_t temp = arena_create(block_alloc(&ctx->device.swapchain.allocator), ctx->device.swapchain.allocator.blockSize);
+        Swapchain* old = ctx->device.swapchain.current;
         create_and_set_new_swapchain(&temp, state->image_count, ctx);
 
         // destroy old
         destroy_swapchain(ctx->device.handle, old);
-        block_alloc_free(&ctx->device.swapchain_allocator, old);
+        block_alloc_free(&ctx->device.swapchain.allocator, old);
 
         state->swapchain_cooldown = state->frames_in_flight;
         state->recreate_swapchain = false;
@@ -762,6 +852,8 @@ void render(vulkan_state_t* vulkan_state, game_state_t* game_state, float time) 
     vkResetFences(ctx->device.handle, 1, &fence);
 
     // rendering begin
+
+    const vec3 sky_col = (vec3){0.4, 0.6, 0.9};
 
     // update global uniforms
     {
@@ -778,6 +870,11 @@ void render(vulkan_state_t* vulkan_state, game_state_t* game_state, float time) 
         uniform->proj = game_state->main_camera.proj;
         uniform->view = transform_to_view_matrix(&game_state->main_camera.transform);
         // for debug
+        uniform->sun_dir = vec3_normalized((vec3){0.6, 1.0, 0.4});
+        uniform->sun_col = (vec3){1.0, 0.95, 0.8};
+        uniform->sky_col = sky_col;
+        uniform->fog_start = 700.0f;
+        uniform->fog_end = 900.0f;
 
         //vec4 vi = mat4_apply(&uniform->view, (vec4){1,0,0,1});
         //vec4 clip = mat4_apply(&uniform->proj, vi);
@@ -796,15 +893,19 @@ void render(vulkan_state_t* vulkan_state, game_state_t* game_state, float time) 
     assert(res == VK_SUCCESS);
 
 
-    VkClearValue clearColor = {{{0.0f, 1.0f, 1.0f, 1.0f}}};
+    VkClearValue clearValues[] = {
+        {{sky_col.x, sky_col.y, sky_col.z, 1.0f}},
+        {.depthStencil = {1.0f, 0}},
+
+    };
     VkRenderPassBeginInfo renderPassBeginInfo = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
         .renderPass = ctx->render_state.render_pass_main,
-        .framebuffer = ctx->device.swapchain->framebuffers[state->curr_image_index],
+        .framebuffer = ctx->device.swapchain.current->framebuffers[state->curr_image_index],
         .renderArea.offset = {0,0},
         .renderArea.extent = ctx->physicalDevice.selected->surfaceCapabilities.currentExtent,
-        .clearValueCount = 1,
-        .pClearValues = &clearColor
+        .clearValueCount = LEN(clearValues),
+        .pClearValues = clearValues
     };
     vkCmdResetQueryPool(cmdBuf, state->query_pool_timestamp, frame * 2, 2);
     vkCmdBeginRenderPass(cmdBuf, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
@@ -844,7 +945,7 @@ void render(vulkan_state_t* vulkan_state, game_state_t* game_state, float time) 
         .waitSemaphoreCount = 1,
         .pWaitSemaphores = &renderFinishedSemaphore, 
         .swapchainCount = 1,
-        .pSwapchains = &ctx->device.swapchain->handle,
+        .pSwapchains = &ctx->device.swapchain.current->handle,
         .pImageIndices = &state->curr_image_index
     };
     res = vkQueuePresentKHR(ctx->device.queueHandles.present, &presentInfo);
