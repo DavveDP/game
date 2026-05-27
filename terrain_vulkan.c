@@ -5,11 +5,10 @@ typedef struct {
     vec3 pos;
 } terrain_vertex_t;
 
-
-#define TERRAIN_MAX_INSTANCES 4096
+#define TERRAIN_MAX_INSTANCES 8192 // 512*512, but 300000 to show that we aren't exceeding the limit
 #define TERRAIN_MAX_SPLINE_SEGMENTS 128 // across all terrain splines
-#define GRID_SIZE 2048
-#define TERRAIN_MAX_Y 150
+#define TERRAIN_GRID_SIZE 32000
+#define TERRAIN_MAX_Y 4500
 #define LOD_COUNT 10
 
 typedef struct {
@@ -24,6 +23,20 @@ typedef struct {
     // padding...
 } terrain_instance_data_t;
 
+// Replace the ambiguous naive flag with explicit parameters
+typedef struct {
+    bool use_lod;           // false = naive (uniform finest detail)
+    u8   max_lod;           // deepest level to recurse to
+    bool use_frustum_cull;
+    bool use_stitching;
+} terrain_lod_config_t;
+
+static terrain_lod_config_t lod_config_g = {
+    .use_lod = false,
+    .max_lod = 6,
+    .use_frustum_cull = false,
+    .use_stitching = false
+};
 
 //static inline float lod_to_sq_dist(u8 lod, const lod_to_dist_params_t* p) {
 //    float d = p->min_lod_dist * (1 - powf((float)lod / LOD_COUNT, p->k));
@@ -276,7 +289,7 @@ void terrain_init(
             VkDescriptorBufferInfo ssbo_buffer_info = {
                 .buffer = terrain->ssbo_instance_data[i].arena->buffer,
                 .offset = terrain->ssbo_instance_data[i].offset,
-                .range = VK_WHOLE_SIZE
+                .range = sizeof(terrain_instance_data_t) * TERRAIN_MAX_INSTANCES
             };
             VkWriteDescriptorSet descriptor_writes[] = 
             {
@@ -406,7 +419,10 @@ void terrain_instance_swap(u32 a, u32 b) {
     instance_data_buffer_g[b] = temp;
 }
 
+#include <stdio.h>
 static inline void output_instance(qt_node node, u8 lod) {
+    //printf("instance count %u, size %f\n", instance_count_g, node.size);
+    if (instance_count_g >= TERRAIN_MAX_INSTANCES) return;
     instance_data_buffer_g[instance_count_g].x = node.x;
     instance_data_buffer_g[instance_count_g].z = node.z;
     instance_data_buffer_g[instance_count_g].size = node.size;
@@ -428,49 +444,46 @@ typedef enum {
 } ChunkedLodResult;
 
 static u8 fill_instance(qt_node node, vec2 camera_xz_pos, frustum_t* frustum, u8 lod) {
-    // frustum cull
-    // compute AABB
-    aabb_t aabb = {
-        .xmin = node.x - node.size/2,
-        .xmax = node.x + node.size/2,
-        .ymin = 0,
-        .ymax = TERRAIN_MAX_Y,
-        .zmin = node.z - node.size/2,
-        .zmax = node.z + node.size/2,
-    };
+    // frustum cull (not working rn lol)
+    if (lod_config_g.use_frustum_cull) {
+        // compute AABB
+        aabb_t aabb = {
+            .xmin = node.x - node.size/2,
+            .xmax = node.x + node.size/2,
+            .ymin = 0,
+            .ymax = TERRAIN_MAX_Y,
+            .zmin = node.z - node.size/2,
+            .zmax = node.z + node.size/2,
+        };
 
-    //if (!frustum_intersects_aabb(frustum, &aabb)) {
-    //    return CHUNKED_LOD_RESULT_CULLED; // culled
-    //}
+        if (!frustum_intersects_aabb(frustum, &aabb)) {
+            return CHUNKED_LOD_RESULT_CULLED; // culled
+        }
+    }
 
-    if (lod == LOD_COUNT - 1) {
+    if (lod >= lod_config_g.max_lod) {
         output_instance(node, lod);
         return CHUNKED_LOD_RESULT_STOPPED;
     }
 
 
-    // chebichev
-    vec2 diff = {
-        fabsf(camera_xz_pos.x - node.x) - node.size/2,
-        fabsf(camera_xz_pos.y - node.z) - node.size/2
-    };
-    float d = fmaxf(0.0f, fmaxf(diff.x, diff.y));
-    d = d * d;
-    //vec2 center = { node.x, node.z };
-    //float d = vec2_sq_dist(center, camera_xz_pos);
-
-
-    //printf("%f %f %f %f\n", aabb.xmin, aabb.xmax, aabb.zmin, aabb.zmax);
-    //printf("lod: %hhu, d: %f, comparing to: %f\n", lod, sqrtf(d), sqrtf(lod_to_sq_dist_quantized_g[lod]));
-    float min_dist_for_lod = lod_to_sq_dist_quantized_g[lod];
-    // node is too far from the camera, given our LOD level(depth)
-    if (d >= min_dist_for_lod) {
-        assert(lod > 0);
-        output_instance(node, lod);
-        //printf("lod: %hhu, d: %f, quant: %f, prev: %f\n", lod, sqrtf(d), sqrtf(lod_to_sq_dist_quantized_g[lod]), sqrtf(lod_to_sq_dist_quantized_g[lod-1]));
-        //assert(d < lod_to_sq_dist_quantized_g[lod-1]); // otherwise we dropped 2 lod levels, breaking the invariant
-        return CHUNKED_LOD_RESULT_STOPPED;
+    if (lod_config_g.use_lod && lod > 0) {
+        // chebichev
+        vec2 diff = {
+            fabsf(camera_xz_pos.x - node.x) - node.size/2,
+            fabsf(camera_xz_pos.y - node.z) - node.size/2
+        };
+        float d = fmaxf(0.0f, fmaxf(diff.x, diff.y));
+        d = d * d;
+        float min_dist_for_lod = lod_to_sq_dist_quantized_g[lod];
+        // node is too far from the camera, given our LOD level(depth)
+        if (d >= min_dist_for_lod) {
+            assert(lod > 0);
+            output_instance(node, lod);
+            return CHUNKED_LOD_RESULT_STOPPED;
+        }
     }
+
 
 
     // recurse 4 children
@@ -485,7 +498,6 @@ static u8 fill_instance(qt_node node, vec2 camera_xz_pos, frustum_t* frustum, u8
     return CHUNKED_LOD_RESULT_SUBDIVIDED;
 }
 
-#include <stdio.h>
 
 typedef enum {
     TERRAIN_NEIGHBOUR_NONE  = 0,
@@ -505,15 +517,15 @@ void terrain_fill_instance_data(camera_t* cam, terrain_instance_data_t* instance
     // root covers 4 tiles
 
     // snap pos to nearest grid corner, ie round
-    float corner_x = floorf(cam->transform.pos.x / GRID_SIZE + 0.5f) * GRID_SIZE;
-    float corner_z = floorf(cam->transform.pos.z / GRID_SIZE + 0.5f) * GRID_SIZE;
+    float corner_x = floorf(cam->transform.pos.x / TERRAIN_GRID_SIZE + 0.5f) * TERRAIN_GRID_SIZE;
+    float corner_z = floorf(cam->transform.pos.z / TERRAIN_GRID_SIZE + 0.5f) * TERRAIN_GRID_SIZE;
 
     qt_node root = {
-        .size = GRID_SIZE * 2,
+        .size = TERRAIN_GRID_SIZE * 2,
         .x = corner_x, 
         .z = corner_z
     };
-    //printf("qt root: %f, %f, cam: %f %f, grid size: %f\n", root.x, root.z, cam->transform.pos.x, cam->transform.pos.z, (float)GRID_SIZE);
+    //printf("qt root: %f, %f, cam: %f %f, grid size: %f\n", root.x, root.z, cam->transform.pos.x, cam->transform.pos.z, (float)TERRAIN_GRID_SIZE);
 
     frustum_t f = camera_get_frustum(cam);
     instance_count_g = 0;
@@ -521,68 +533,74 @@ void terrain_fill_instance_data(camera_t* cam, terrain_instance_data_t* instance
 
     fill_instance(root, (vec2){cam->transform.pos.x, cam->transform.pos.z}, &f, 0);
 
+    printf("instance count: %u\n", instance_count_g);
+
     assert(instance_count_g > 0);
-    // sort based on size
-    quicksort(instance_count_g, terrain_instance_compare_size, terrain_instance_swap);
 
+    // begin stitching pass
+    if (lod_config_g.use_stitching) {
 
-    memset(instance_index_buf_freq_count_g, 0, sizeof(instance_index_buf_freq_count_g));
+        // sort based on size
+        quicksort(instance_count_g, terrain_instance_compare_size, terrain_instance_swap);
 
-    const static float epsilon = 0.001f;
-    u32 index_fine_start = 0;
-    // scan and adjust index buffers based on neighbours
-    for (u32 lod = LOD_COUNT - 1; lod > 1; lod--) {  // fine lods
-        u32 n_fine   = lod_instance_counts_g[lod];
-        u32 n_coarse = lod_instance_counts_g[lod - 1];
-        if (n_fine == 0 || n_coarse == 0) { index_fine_start += n_fine; continue; }
+        memset(instance_index_buf_freq_count_g, 0, sizeof(instance_index_buf_freq_count_g));
 
-        terrain_instance_data_t* fine_tiles   = &instance_data_buffer_g[index_fine_start];
-        terrain_instance_data_t* coarse_tiles = &instance_data_buffer_g[index_fine_start + n_fine];
-        index_fine_start += n_fine;
+        const static float epsilon = 0.001f;
+        u32 index_fine_start = 0;
+        // scan and adjust index buffers based on neighbours
+        for (u32 lod = LOD_COUNT - 1; lod > 1; lod--) {  // fine lods
+            u32 n_fine   = lod_instance_counts_g[lod];
+            u32 n_coarse = lod_instance_counts_g[lod - 1];
+            if (n_fine == 0 || n_coarse == 0) { index_fine_start += n_fine; continue; }
 
-        for (u32 f = 0; f < n_fine; f++) {
-            u8 neighbour_mask = 0;
-            for (u32 c = 0; c < n_coarse; c++) {
-                float s = fine_tiles[f].size / 2;
-                assert(4 * s == coarse_tiles[c].size);
+            terrain_instance_data_t* fine_tiles   = &instance_data_buffer_g[index_fine_start];
+            terrain_instance_data_t* coarse_tiles = &instance_data_buffer_g[index_fine_start + n_fine];
+            index_fine_start += n_fine;
 
-                float dx = fabsf(fine_tiles[f].x - coarse_tiles[c].x);
-                float dz = fabsf(fine_tiles[f].z - coarse_tiles[c].z);
+            for (u32 f = 0; f < n_fine; f++) {
+                u8 neighbour_mask = 0;
+                for (u32 c = 0; c < n_coarse; c++) {
+                    float s = fine_tiles[f].size / 2;
+                    assert(4 * s == coarse_tiles[c].size);
 
-                // borders a coarser lod tile in the x dimension
-                if (fabsf(dx - 3*s) < epsilon && fabsf(dz - s) < epsilon) {
-                    neighbour_mask |= (coarse_tiles[c].x > fine_tiles[f].x) ? TERRAIN_NEIGHBOUR_RIGHT : TERRAIN_NEIGHBOUR_LEFT;
+                    float dx = fabsf(fine_tiles[f].x - coarse_tiles[c].x);
+                    float dz = fabsf(fine_tiles[f].z - coarse_tiles[c].z);
+
+                    // borders a coarser lod tile in the x dimension
+                    if (fabsf(dx - 3*s) < epsilon && fabsf(dz - s) < epsilon) {
+                        neighbour_mask |= (coarse_tiles[c].x > fine_tiles[f].x) ? TERRAIN_NEIGHBOUR_RIGHT : TERRAIN_NEIGHBOUR_LEFT;
+                    }
+                    if (fabsf(dz - 3*s) < epsilon && fabsf(dx - s) < epsilon) {
+                        neighbour_mask |= (coarse_tiles[c].z > fine_tiles[f].z) ? TERRAIN_NEIGHBOUR_DOWN  : TERRAIN_NEIGHBOUR_UP;
+                    }
+
                 }
-                if (fabsf(dz - 3*s) < epsilon && fabsf(dx - s) < epsilon) {
-                    neighbour_mask |= (coarse_tiles[c].z > fine_tiles[f].z) ? TERRAIN_NEIGHBOUR_DOWN  : TERRAIN_NEIGHBOUR_UP;
+
+                /* Index buffer layouts (0 normal indices, 1 stitched)
+                 * 0    1    2    3    4    5    6    7    8
+                 * 0 0  0 1  1 0  0 0  1 1  0 1  1 0  1 1  1 1
+                 * 0 0  0 1  1 0  1 1  0 0  1 1  1 1  0 1  1 0
+                 */
+                u8 buf_index = 0;
+                switch (neighbour_mask) {
+                    case TERRAIN_NEIGHBOUR_NONE:    buf_index = 0; break;
+                    case TERRAIN_NEIGHBOUR_RIGHT:   buf_index = 1; break;
+                    case TERRAIN_NEIGHBOUR_LEFT:    buf_index = 2; break;
+                    case TERRAIN_NEIGHBOUR_DOWN:    buf_index = 3; break;
+                    case TERRAIN_NEIGHBOUR_UP:      buf_index = 4; break;
+                    case TERRAIN_NEIGHBOUR_RIGHT | TERRAIN_NEIGHBOUR_DOWN:
+                                                    buf_index = 5; break;
+                    case TERRAIN_NEIGHBOUR_LEFT | TERRAIN_NEIGHBOUR_DOWN:
+                                                    buf_index = 6; break;
+                    case TERRAIN_NEIGHBOUR_RIGHT | TERRAIN_NEIGHBOUR_UP:
+                                                    buf_index = 7; break;
+                    case TERRAIN_NEIGHBOUR_LEFT | TERRAIN_NEIGHBOUR_UP:
+                                                    buf_index = 8; break;
+                                                    //default: assert(0);                            break;
                 }
-
+                // modify based on neighbour
+                fine_tiles[f].buf_index = buf_index;
             }
-
-            /* Index buffer layouts (0 normal indices, 1 stitched)
-             * 0    1    2    3    4    5    6    7    8
-             * 0 0  0 1  1 0  0 0  1 1  0 1  1 0  1 1  1 1
-             * 0 0  0 1  1 0  1 1  0 0  1 1  1 1  0 1  1 0
-             */
-            u8 buf_index = 0;
-            switch (neighbour_mask) {
-                case TERRAIN_NEIGHBOUR_NONE:    buf_index = 0; break;
-                case TERRAIN_NEIGHBOUR_RIGHT:   buf_index = 1; break;
-                case TERRAIN_NEIGHBOUR_LEFT:    buf_index = 2; break;
-                case TERRAIN_NEIGHBOUR_DOWN:    buf_index = 3; break;
-                case TERRAIN_NEIGHBOUR_UP:      buf_index = 4; break;
-                case TERRAIN_NEIGHBOUR_RIGHT | TERRAIN_NEIGHBOUR_DOWN:
-                                                buf_index = 5; break;
-                case TERRAIN_NEIGHBOUR_LEFT | TERRAIN_NEIGHBOUR_DOWN:
-                                                buf_index = 6; break;
-                case TERRAIN_NEIGHBOUR_RIGHT | TERRAIN_NEIGHBOUR_UP:
-                                                buf_index = 7; break;
-                case TERRAIN_NEIGHBOUR_LEFT | TERRAIN_NEIGHBOUR_UP:
-                                                buf_index = 8; break;
-                                                //default: assert(0);                            break;
-            }
-            // modify based on neighbour
-            fine_tiles[f].buf_index = buf_index;
         }
     }
 
@@ -592,32 +610,27 @@ void terrain_fill_instance_data(camera_t* cam, terrain_instance_data_t* instance
     }
 }
 
-static bool frozen;
-static camera_t frozen_cam;
 void terrain_render(VulkanCtx* ctx, game_state_t* game_state, terrain_gpu_t* terrain, VkCommandBuffer cmd_buf, VkDescriptorSet ubo_global_descriptor_set, u32 frame) {
-    if (game_state->freeze_terrain) {
-        frozen = !frozen;
-        frozen_cam = game_state->main_camera;
-    } 
-
     //vec3_print(game_state->main_camera.transform.pos, printf);
 
-    float coarsest_dist = GRID_SIZE * 2; //* sqrtf(2.0f);
+    float coarsest_dist = TERRAIN_GRID_SIZE * 2; //* sqrtf(2.0f);
     float finest_dist = coarsest_dist / (float)(1 << (LOD_COUNT - 1));
     finest_dist *= 2.0f; // finest LOD radius tuning exp dropoff
     lod_to_sq_dist_set_params(finest_dist);
 
     // instance generation
-    terrain_fill_instance_data(frozen ? &frozen_cam : &game_state->main_camera, instance_data_buffer_g);
-    quicksort(instance_count_g, terrain_instance_compare_buf_index, terrain_instance_swap);
+    terrain_fill_instance_data(game_state->frozen_terrain ? &game_state->frozen_camera : &game_state->main_camera, instance_data_buffer_g);
+    if (lod_config_g.use_stitching) {
+        quicksort(instance_count_g, terrain_instance_compare_buf_index, terrain_instance_swap);
+    }
+    //printf("copying\n");
     memcpy(terrain->ssbo_instance_data[frame].mapped, instance_data_buffer_g, sizeof(terrain_instance_data_t) * instance_count_g);
+    //printf("copied\n");
 
     // noise uniforms
     UBO_terrain_noise_t* noise = terrain->ubo_noise[frame].mapped;
-    noise->grid_size = GRID_SIZE*2;
-    noise->y_scale = 15.0f;
 
-    const float weights[] = {0.65f, 0.25f, 0.1f};
+    const float weights[] = {0.33f, 0.33f, 0.2f};
     bezier2d_t a_segments[] = {
         {{0.0f, 0.0f}, {6.667f, 0.0f}, {12.33f, 0.03f}, {18, 0.03f}},
         {{18, 0.03f}, {32.667f, 0.03f}, {47.33f, 0.03f}, {62, 0.03f}},
@@ -635,23 +648,37 @@ void terrain_render(VulkanCtx* ctx, game_state_t* game_state, terrain_gpu_t* ter
     }
     //printf("\n");
     bezier2d_t b_segments[] = {
-        //{{0.0f, 1.0f}, {0.33f, 1.0f}, {0.66f, 1.0f}, {1.0f, 1.0f}},
+        {{0.0f, 1.0f}, {11.33f, 1.0f}, {28.5f, 0.685f}, {32.0f, 0.685f}},
+        {{32.0f, 0.685f}, {44.5f, 0.685f}, {57.6f, 0.546f}, {68.0f, 0.546f}},
+        {{68.0f, 0.546f}, {71.706f, 0.546f}, {74.5f, 0.6f}, {78.0f, 0.6f}},
+        {{78.0f, 0.6f}, {86.424f, 0.6f}, {98.4f, 0.122f}, {106.0f, 0.121f}},
+        {{106.0f, 0.121f}, {109.71f, 0.12f}, {139.5f, 0.11f}, {143.0f, 0.11f}},
+        {{143.0f, 0.11f}, {146.7f, 0.11f}, {161.5f, 0.11f}, {165.0f, 0.11f}},
+        {{165.0f, 0.11f}, {168.7f, 0.11f}, {167.5f, 0.35f}, {171.0f, 0.35f}},
+        {{171.0f, 0.35f}, {174.7f, 0.35f}, {175.5f, 0.35f}, {179.0f, 0.35f}},
+        {{179.0f, 0.35f}, {182.7f, 0.35f}, {181.5f, 0.11f}, {185.0f, 0.11f}},
+        {{185.0f, 0.11f}, {191.5f, 0.11f}, {198.35f, 0.064f}, {205.0f, 0.0613f}},
     };
     for (u32 i = 0; i < LEN(a_segments); i++) {
-        //bezier2d_scale(b_segments[i], 1.0/232, TERRAIN_MAX_Y * weights[1]);
+        b_segments[i] = bezier2d_scale(b_segments[i], 1.0/(b_segments[LEN(b_segments)-1]).p3.x, TERRAIN_MAX_Y * weights[1]);
     }
     bezier2d_t c_segments[] = {
-        //{{0.0f, 1.0f}, {0.33f, 1.0f}, {0.66f, 1.0f}, {1.0f, 1.0f}},
+        {{0.0f, 0.0f}, {5.7f, 0.0f}, {11.33f, 0.0f}, {17.0f, 0.0f}},
+        {{17.0f, 0.0f}, {23.67f, 0.0f}, {30.3f, 0.085f}, {37.0f, 0.145f}},
+        {{37.0f, 0.145f}, {51.67f, 0.276f}, {66.3f, 0.29f}, {81.0f, 0.3f}},
+        {{81.0f, 0.3f}, {92.67f, 0.31f}, {109.5f, 0.315f}, {116.0f, 0.315f}},
+        {{116.0f, 0.315f}, {122.97f, 0.315f}, {147.5f, 0.731f}, {154.0f, 0.836f}},
+        {{154.0f, 0.836f}, {162.15f, 0.968f}, {169.5f, 0.93f}, {191.0f, 0.93f}}
     };
     for (u32 i = 0; i < LEN(c_segments); i++) {
-        //bezier2d_scale(b_segments[i], 1.0/232, TERRAIN_MAX_Y * weights[2]);
+        c_segments[i] = bezier2d_scale(c_segments[i], 1.0/(c_segments[LEN(c_segments)-1]).p3.x, TERRAIN_MAX_Y * weights[2]);
     }
     UBO_terrain_noise_params_t* A = &noise->A;
     A->first_segment_index = 0;
     A->segment_count = LEN(a_segments);
     UBO_terrain_noise_params_t* B = &noise->B;
     B->first_segment_index = A->segment_count;
-    B->segment_count = LEN(b_segments);;
+    B->segment_count = LEN(b_segments);
     UBO_terrain_noise_params_t* C = &noise->C;
     C->first_segment_index = A->segment_count + B->segment_count;
     C->segment_count = LEN(c_segments);

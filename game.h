@@ -67,7 +67,8 @@ typedef struct {
     camera_t main_camera;
     vec3 camera_speed;
     u32 current_subdiv;
-    bool freeze_terrain;
+    camera_t frozen_camera;
+    bool frozen_terrain;
     bool show_wireframe;
 } game_state_t;
 

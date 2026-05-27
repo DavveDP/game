@@ -296,9 +296,10 @@ int main(int argc, char** argv) {
 
     // game init?
     game_state_t game_state;
-    game_state.main_camera = camera_looking_at_from((vec3){1.0f,0,1.0f}, (vec3){0,250,0});
+    game_state.main_camera = camera_looking_at_from((vec3){-1.0f,2242,-1.0f}, (vec3){-875.718567f, 2442.570068f, -1000.953491f});
     game_state.camera_speed = vec3_zero;
     game_state.current_subdiv = 1;
+    game_state.frozen_terrain = false;
     float delta_time = 0;
     bool window_focused = false;
 

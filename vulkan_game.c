@@ -400,6 +400,7 @@ vulkan_state_t* init_rendering(
         arena_mark_t validDeviceMark = arena_mark(arena_permanent);
 
         for (int i = 0; i < nPhys; i++) {
+            if (i == 0) continue;
             arena_reset_to(arena_permanent, validDeviceMark);
             PhysicalDevice* validDevice = alloc(arena_permanent, PhysicalDevice);
 
@@ -864,7 +865,8 @@ void render(vulkan_state_t* vulkan_state, game_state_t* game_state, float time) 
         float aspect = (float)ctx->physicalDevice.selected->surfaceCapabilities.currentExtent.width / 
             ctx->physicalDevice.selected->surfaceCapabilities.currentExtent.height;
         float fov_rads = PI/2;
-        game_state->main_camera.proj = mat4_perspective(fov_rads, aspect, 0.1f, 1000.0f);
+        float far = TERRAIN_GRID_SIZE / sqrtf(2);
+        game_state->main_camera.proj = mat4_perspective(fov_rads, aspect, 0.1f, far);
 
         // camera
         uniform->proj = game_state->main_camera.proj;
@@ -873,8 +875,8 @@ void render(vulkan_state_t* vulkan_state, game_state_t* game_state, float time) 
         uniform->sun_dir = vec3_normalized((vec3){0.6, 1.0, 0.4});
         uniform->sun_col = (vec3){1.0, 0.95, 0.8};
         uniform->sky_col = sky_col;
-        uniform->fog_start = 700.0f;
-        uniform->fog_end = 900.0f;
+        uniform->fog_start = 0.7*far;
+        uniform->fog_end = 0.9*far;
 
         //vec4 vi = mat4_apply(&uniform->view, (vec4){1,0,0,1});
         //vec4 clip = mat4_apply(&uniform->proj, vi);

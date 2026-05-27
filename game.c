@@ -27,17 +27,22 @@ void main_camera_movement(input_t* input, game_state_t* game_state, float delta_
     transform_t* cam_trans = &game_state->main_camera.transform;
     // camera move
     vec3* speed = &game_state->camera_speed;
-    const float max_speed = 50.0f;
+    const float max_speed = 500000.0f;
     vec3 target_velocity = vec3_scale(camera_acceleration, max_speed);
     //vec3_print(target_velocity, printf);
 
     // exponential smoothing toward target
-    float responsiveness = 100.0f;
-    *speed = vec3_lerp(*speed, target_velocity, 1.0f - expf(-responsiveness * delta_time));
-    const float dead_zone = 2e-2f;
-    if (vec3_sq_magnitude(*speed) < dead_zone * dead_zone) {
+    if (!vec3_is_zero(camera_acceleration)) {
+        *speed = vec3_scale(camera_acceleration, max_speed * delta_time);
+    } else {
         *speed = vec3_zero;
     }
+    //float responsiveness = 1e26f;
+    //*speed = vec3_lerp(*speed, target_velocity, 1.0f - expf(-responsiveness * delta_time));
+    //const float dead_zone = 2e-2f;
+    //if (vec3_sq_magnitude(*speed) < dead_zone * dead_zone) {
+    //    *speed = vec3_zero;
+    //}
 
     vec3 speed_xz = {
         speed->x,
@@ -74,11 +79,12 @@ void update(input_t* input, game_state_t* game_state, float delta_time) {
     //    game_state->current_subdiv = ((game_state->current_subdiv - 1) + n_index_buffers) % n_index_buffers;
     //}
     main_camera_movement(input, game_state, delta_time);
-    
+
     if (was_btn_pressed(input, BTN_FREEZE_TERRAIN)) {
-        game_state->freeze_terrain = true;
-    } else {
-        game_state->freeze_terrain = false;
+        game_state->frozen_terrain = !game_state->frozen_terrain;
+        if (game_state->frozen_terrain) {
+            game_state->frozen_camera = game_state->main_camera;
+        }
     }
 
     if (was_btn_pressed(input, BTN_TOGGLE_WIREFRAME)) {
