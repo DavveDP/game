@@ -124,40 +124,8 @@ typedef struct {
     VkDescriptorSetLayout descriptor_set_layout;
     // offset per frame 
     VkDescriptorSet* descriptor_sets;
-    gpu_buffer_alloc_t* ubo_noise;
-    gpu_buffer_alloc_t* ssbo_spline_segments;
     gpu_buffer_alloc_t* ssbo_instance_data;
 } terrain_gpu_t;
-
-typedef struct {
-    // noise
-    float H;
-    u32 octaves;
-    
-    // height design function
-    u32 first_segment_index;
-    u32 segment_count;
-} UBO_terrain_noise_params_t;
-
-static_assert(sizeof(UBO_terrain_noise_params_t) == 16);
-
-typedef struct {
-    // mesh related globals
-    u32 grid_size;
-    float y_scale;
-    float _pad[2];
-
-    // noise
-    UBO_terrain_noise_params_t A, B, C;
-} UBO_terrain_noise_t;
-
-static_assert(sizeof(UBO_terrain_noise_t) == 64);
-
-typedef struct {
-    bezier2d_t curve;
-} terrain_spline_segment_t;
-
-static_assert(sizeof(terrain_spline_segment_t) == 32);
 
 typedef struct {
     VulkanCtx ctx;

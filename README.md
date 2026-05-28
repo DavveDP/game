@@ -5,11 +5,12 @@
 - Vulkan SDK (install on your own, project requires env variable 
 $VULKAN_SDK to be defined)
 - X11 lib, with XI (raw input) extensions
+- clang supporting c23, developed with clang 18.1
 
 ```bash
-apt install libx11-dev libxi-dev
+apt install libx11-dev libxi-dev clang
 ```
 
-## Roadmap
+## Remarks
 
-1. Render points of implicit surface generated via compute
+Project only runs on X11 and re

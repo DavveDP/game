@@ -18,7 +18,7 @@ struct InstanceData {
     uint buf_index;
 };
 
-layout(set = 1, binding = 2) readonly buffer InstanceBuffer {
+layout(set = 1, binding = 0) readonly buffer InstanceBuffer {
     InstanceData instances[];
 };
 
@@ -105,17 +105,17 @@ void main() {
     vec3 color_snow       = vec3(0.92, 0.94, 0.98);
 
     vec3 col;
-if (is_water) {
-    float depth = clamp(-raw_height / 600.0, 0.0, 1.0);
-    col = mix(color_shallow, color_deep_water, smoothstep(0.0, 1.0, depth));
-} else {
-    col = color_grass;
-    col = mix(col, color_sand,     smoothstep(80.0,  0.0,   raw_height)); // wide beach band
-    col = mix(col, color_grass,    smoothstep(40.0, 120.0,  raw_height)); // grass overtakes sand
-    col = mix(col, color_highland, smoothstep(800.0, 1800.0, raw_height));
-    col = mix(col, color_rock,     smoothstep(0.3,   0.55,  slope));
-    col = mix(col, color_snow,     smoothstep(2500.0, 3500.0, raw_height) * smoothstep(0.45, 0.25, slope));
-}
+    if (is_water) {
+        float depth = clamp(-raw_height / 600.0, 0.0, 1.0);
+        col = mix(color_shallow, color_deep_water, smoothstep(0.0, 1.0, depth));
+    } else {
+        col = color_grass;
+        col = mix(col, color_sand,     smoothstep(80.0,  0.0,   raw_height)); // wide beach band
+        col = mix(col, color_grass,    smoothstep(40.0, 120.0,  raw_height)); // grass overtakes sand
+        col = mix(col, color_highland, smoothstep(800.0, 1800.0, raw_height));
+        col = mix(col, color_rock,     smoothstep(0.3,   0.55,  slope));
+        col = mix(col, color_snow,     smoothstep(2500.0, 3500.0, raw_height) * smoothstep(0.45, 0.25, slope));
+    }
 
     fragColor   = col;
     fragIsWater = is_water ? 1.0 : 0.0;  // pass to frag shader

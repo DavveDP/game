@@ -32,10 +32,10 @@ typedef struct {
 } terrain_lod_config_t;
 
 static terrain_lod_config_t lod_config_g = {
-    .use_lod = false,
+    .use_lod = true,
     .max_lod = 6,
     .use_frustum_cull = false,
-    .use_stitching = false
+    .use_stitching = true
 };
 
 //static inline float lod_to_sq_dist(u8 lod, const lod_to_dist_params_t* p) {
@@ -217,14 +217,8 @@ void terrain_init(
         file_data_t vert_shader, 
         file_data_t frag_shader) 
 {
-    terrain->ubo_noise = alloc_array(arena_permanent, gpu_buffer_alloc_t, ctx->render_state.frames_in_flight);
-    terrain->ssbo_spline_segments = alloc_array(arena_permanent, gpu_buffer_alloc_t, ctx->render_state.frames_in_flight);
     terrain->ssbo_instance_data = alloc_array(arena_permanent, gpu_buffer_alloc_t, ctx->render_state.frames_in_flight);
     for (u32 i = 0; i < ctx->render_state.frames_in_flight; i++) {
-        // alloc uniform buffer (one for each frame)
-        terrain->ubo_noise[i] = gpu_buffer_arena_alloc(&ctx->arena_ubo_ssbo, sizeof(UBO_terrain_noise_t));
-        // alloc spline segment buffer (for terrain shaping)
-        terrain->ssbo_spline_segments[i] = gpu_buffer_arena_alloc(&ctx->arena_ubo_ssbo, sizeof(terrain_spline_segment_t) * TERRAIN_MAX_SPLINE_SEGMENTS);
         // alloc instance data buffer
         terrain->ssbo_instance_data[i] = gpu_buffer_arena_alloc(&ctx->arena_ubo_ssbo, sizeof(terrain_instance_data_t) * TERRAIN_MAX_INSTANCES);
     }
@@ -234,23 +228,9 @@ void terrain_init(
     terrain->descriptor_sets = alloc_array(arena_permanent, VkDescriptorSet, ctx->render_state.frames_in_flight);
     {
         VkDescriptorSetLayoutBinding bindings[] = {
-            // noise
-            {
-                .binding = 0, // terrain specific
-                .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                .descriptorCount = 1,
-                .stageFlags = VK_SHADER_STAGE_VERTEX_BIT
-            },
-            // spline segments
-            {
-                .binding = 1,
-                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                .descriptorCount = 1,
-                .stageFlags = VK_SHADER_STAGE_VERTEX_BIT
-            },
             // instance data
             {
-                .binding = 2,
+                .binding = 0,
                 .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                 .descriptorCount = 1,
                 .stageFlags = VK_SHADER_STAGE_VERTEX_BIT
@@ -276,16 +256,6 @@ void terrain_init(
         // fill in descriptor set (table) with info about which buffer to use, offset and range 
         // (should obviously match the layout binding that we will put in the pipeline)
         for (int i = 0; i < ctx->render_state.frames_in_flight; i++) {
-            VkDescriptorBufferInfo ubo_buffer_info = {
-                .buffer = terrain->ubo_noise[i].arena->buffer,
-                .offset = terrain->ubo_noise[i].offset,
-                .range = sizeof(UBO_terrain_noise_t)
-            };
-            VkDescriptorBufferInfo ssbo_spline_segments_buffer_info = {
-                .buffer = terrain->ssbo_spline_segments[i].arena->buffer,
-                .offset = terrain->ssbo_spline_segments[i].offset,
-                .range = sizeof(terrain_spline_segment_t) * TERRAIN_MAX_SPLINE_SEGMENTS
-            };
             VkDescriptorBufferInfo ssbo_buffer_info = {
                 .buffer = terrain->ssbo_instance_data[i].arena->buffer,
                 .offset = terrain->ssbo_instance_data[i].offset,
@@ -297,24 +267,6 @@ void terrain_init(
                     .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                     .dstSet = terrain->descriptor_sets[i],
                     .dstBinding = 0,
-                    .dstArrayElement = 0,
-                    .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                    .descriptorCount = 1,
-                    .pBufferInfo = &ubo_buffer_info
-                },
-                {
-                    .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                    .dstSet = terrain->descriptor_sets[i],
-                    .dstBinding = 1,
-                    .dstArrayElement = 0,
-                    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                    .descriptorCount = 1,
-                    .pBufferInfo = &ssbo_spline_segments_buffer_info
-                },
-                {
-                    .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                    .dstSet = terrain->descriptor_sets[i],
-                    .dstBinding = 2,
                     .dstArrayElement = 0,
                     .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                     .descriptorCount = 1,
@@ -626,80 +578,6 @@ void terrain_render(VulkanCtx* ctx, game_state_t* game_state, terrain_gpu_t* ter
     //printf("copying\n");
     memcpy(terrain->ssbo_instance_data[frame].mapped, instance_data_buffer_g, sizeof(terrain_instance_data_t) * instance_count_g);
     //printf("copied\n");
-
-    // noise uniforms
-    UBO_terrain_noise_t* noise = terrain->ubo_noise[frame].mapped;
-
-    const float weights[] = {0.33f, 0.33f, 0.2f};
-    bezier2d_t a_segments[] = {
-        {{0.0f, 0.0f}, {6.667f, 0.0f}, {12.33f, 0.03f}, {18, 0.03f}},
-        {{18, 0.03f}, {32.667f, 0.03f}, {47.33f, 0.03f}, {62, 0.03f}},
-        {{62, 0.03f}, {64.667f, 0.03f}, {67.33f, 0.378f}, {70, 0.378f}},
-        {{70, 0.378f}, {82.33f, 0.378f}, {94.667f, 0.378f}, {107, 0.378f}},
-        {{107, 0.378f}, {111.33f, 0.378f}, {115.667f, 0.886f}, {120, 0.887f}},
-        {{120, 0.887f}, {123.31f, 0.887f}, {125.907f, 0.9f}, {130, 0.904f}},
-        {{130, 0.904f}, {146, 0.948f}, {162.75f, 0.943f}, {178, 0.958f}},
-        {{178, 0.958f}, {196.75f, 0.977f}, {214, 0.981f}, {232, 1.0f}},
-        //{{0.0f, 0.0f}, {0.33f, 0.0f}, {0.66f, 1.0f}, {1.0f, 1.0f}}
-    };
-    for (u32 i = 0; i < LEN(a_segments); i++) {
-        a_segments[i] = bezier2d_scale(a_segments[i], 1.0/(a_segments[LEN(a_segments) - 1]).p3.x, TERRAIN_MAX_Y * weights[0]);
-        ////printf("%u: [p0.x: %f p1.x: %f]", i, a_segments[i].p0.x, a_segments[i].p3.x);
-    }
-    //printf("\n");
-    bezier2d_t b_segments[] = {
-        {{0.0f, 1.0f}, {11.33f, 1.0f}, {28.5f, 0.685f}, {32.0f, 0.685f}},
-        {{32.0f, 0.685f}, {44.5f, 0.685f}, {57.6f, 0.546f}, {68.0f, 0.546f}},
-        {{68.0f, 0.546f}, {71.706f, 0.546f}, {74.5f, 0.6f}, {78.0f, 0.6f}},
-        {{78.0f, 0.6f}, {86.424f, 0.6f}, {98.4f, 0.122f}, {106.0f, 0.121f}},
-        {{106.0f, 0.121f}, {109.71f, 0.12f}, {139.5f, 0.11f}, {143.0f, 0.11f}},
-        {{143.0f, 0.11f}, {146.7f, 0.11f}, {161.5f, 0.11f}, {165.0f, 0.11f}},
-        {{165.0f, 0.11f}, {168.7f, 0.11f}, {167.5f, 0.35f}, {171.0f, 0.35f}},
-        {{171.0f, 0.35f}, {174.7f, 0.35f}, {175.5f, 0.35f}, {179.0f, 0.35f}},
-        {{179.0f, 0.35f}, {182.7f, 0.35f}, {181.5f, 0.11f}, {185.0f, 0.11f}},
-        {{185.0f, 0.11f}, {191.5f, 0.11f}, {198.35f, 0.064f}, {205.0f, 0.0613f}},
-    };
-    for (u32 i = 0; i < LEN(a_segments); i++) {
-        b_segments[i] = bezier2d_scale(b_segments[i], 1.0/(b_segments[LEN(b_segments)-1]).p3.x, TERRAIN_MAX_Y * weights[1]);
-    }
-    bezier2d_t c_segments[] = {
-        {{0.0f, 0.0f}, {5.7f, 0.0f}, {11.33f, 0.0f}, {17.0f, 0.0f}},
-        {{17.0f, 0.0f}, {23.67f, 0.0f}, {30.3f, 0.085f}, {37.0f, 0.145f}},
-        {{37.0f, 0.145f}, {51.67f, 0.276f}, {66.3f, 0.29f}, {81.0f, 0.3f}},
-        {{81.0f, 0.3f}, {92.67f, 0.31f}, {109.5f, 0.315f}, {116.0f, 0.315f}},
-        {{116.0f, 0.315f}, {122.97f, 0.315f}, {147.5f, 0.731f}, {154.0f, 0.836f}},
-        {{154.0f, 0.836f}, {162.15f, 0.968f}, {169.5f, 0.93f}, {191.0f, 0.93f}}
-    };
-    for (u32 i = 0; i < LEN(c_segments); i++) {
-        c_segments[i] = bezier2d_scale(c_segments[i], 1.0/(c_segments[LEN(c_segments)-1]).p3.x, TERRAIN_MAX_Y * weights[2]);
-    }
-    UBO_terrain_noise_params_t* A = &noise->A;
-    A->first_segment_index = 0;
-    A->segment_count = LEN(a_segments);
-    UBO_terrain_noise_params_t* B = &noise->B;
-    B->first_segment_index = A->segment_count;
-    B->segment_count = LEN(b_segments);
-    UBO_terrain_noise_params_t* C = &noise->C;
-    C->first_segment_index = A->segment_count + B->segment_count;
-    C->segment_count = LEN(c_segments);
-
-    // write segments
-    terrain_spline_segment_t* s = terrain->ssbo_spline_segments[frame].mapped;
-    for (u32 i = 0; i < LEN(a_segments); i++) {
-        s->curve = a_segments[i];
-        s++;
-    }
-    for (u32 i = 0; i < LEN(b_segments); i++) {
-        s->curve = b_segments[i];
-        s++;
-    }
-    for (u32 i = 0; i < LEN(c_segments); i++) {
-        s->curve = c_segments[i];
-        s++;
-    }
-
-    // first to CPU buffer, also freq count
-    //
 
     TERRAIN_PIPELINE_TYPE selected_pipeline = game_state->show_wireframe ? TERRAIN_PIPELINE_WIREFRAME : TERRAIN_PIPELINE_SHADED;
 
