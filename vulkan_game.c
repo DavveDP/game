@@ -400,7 +400,7 @@ vulkan_state_t* init_rendering(
         arena_mark_t validDeviceMark = arena_mark(arena_permanent);
 
         for (int i = 0; i < nPhys; i++) {
-            if (i == 0) continue;
+            //if (i == 0) continue;
             arena_reset_to(arena_permanent, validDeviceMark);
             PhysicalDevice* validDevice = alloc(arena_permanent, PhysicalDevice);
 
@@ -865,7 +865,7 @@ void render(vulkan_state_t* vulkan_state, game_state_t* game_state, float time) 
         float aspect = (float)ctx->physicalDevice.selected->surfaceCapabilities.currentExtent.width / 
             ctx->physicalDevice.selected->surfaceCapabilities.currentExtent.height;
         float fov_rads = PI/2;
-        float far = TERRAIN_GRID_SIZE / sqrtf(2);
+        float far = TERRAIN_GRID_SIZE / 2;
         game_state->main_camera.proj = mat4_perspective(fov_rads, aspect, 0.1f, far);
 
         // camera

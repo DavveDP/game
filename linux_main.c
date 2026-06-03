@@ -106,6 +106,7 @@ enum X11_KEY_CODES_t {
     X11_KEY_CODE_RIGHT = 114,
     X11_KEY_CODE_DOWN = 116,
     X11_KEY_CODE_LSHIFT = 50,
+    X11_KEY_CODE_LCONTROL = 37,
     X11_KEY_CODE_SPACE = 65,
     //...
 };
@@ -119,7 +120,7 @@ static void init_btn_key_code_table(void) {
     keycode_to_btn_table[X11_KEY_CODE_D] = BTN_MOVE_RIGHT;
     keycode_to_btn_table[X11_KEY_CODE_F] = BTN_FREEZE_TERRAIN;
     keycode_to_btn_table[X11_KEY_CODE_M] = BTN_TOGGLE_WIREFRAME;
-    keycode_to_btn_table[X11_KEY_CODE_LSHIFT] = BTN_MOVE_DOWN;
+    keycode_to_btn_table[X11_KEY_CODE_LCONTROL] = BTN_MOVE_DOWN;
     keycode_to_btn_table[X11_KEY_CODE_SPACE] = BTN_MOVE_UP;
 }
 

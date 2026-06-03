@@ -7,9 +7,10 @@ typedef struct {
 
 #define TERRAIN_MAX_INSTANCES 8192 // 512*512, but 300000 to show that we aren't exceeding the limit
 #define TERRAIN_MAX_SPLINE_SEGMENTS 128 // across all terrain splines
-#define TERRAIN_GRID_SIZE 32000
+#define TERRAIN_GRID_SIZE 64000
 #define TERRAIN_MAX_Y 4500
-#define LOD_COUNT 10
+#define LOD_COUNT 7 // last one not visible
+#define LOD_COUNT_INTERNAL (LOD_COUNT + 2)
 
 typedef struct {
     float min_lod_dist;
@@ -26,14 +27,12 @@ typedef struct {
 // Replace the ambiguous naive flag with explicit parameters
 typedef struct {
     bool use_lod;           // false = naive (uniform finest detail)
-    u8   max_lod;           // deepest level to recurse to
     bool use_frustum_cull;
     bool use_stitching;
 } terrain_lod_config_t;
 
 static terrain_lod_config_t lod_config_g = {
     .use_lod = true,
-    .max_lod = 6,
     .use_frustum_cull = false,
     .use_stitching = true
 };
@@ -43,17 +42,17 @@ static terrain_lod_config_t lod_config_g = {
 //    return d*d;
 //}
 
-static float lod_to_sq_dist_quantized_g[LOD_COUNT];
+static float lod_to_sq_dist_quantized_g[LOD_COUNT_INTERNAL];
 
 void lod_to_sq_dist_set_params(float finest_dist) {
-    for (u8 i = 0; i < LOD_COUNT; i++) {
-        u8 levels_from_finest = (LOD_COUNT - 1) - i;
+    for (u8 i = 0; i < LOD_COUNT_INTERNAL; i++) {
+        u8 levels_from_finest = (LOD_COUNT_INTERNAL - 1) - i;
         float d = finest_dist * (float)(1 << levels_from_finest);
         lod_to_sq_dist_quantized_g[i] = d * d;
     }
 }
 //void lod_to_sq_dist_set_params(const lod_to_dist_params_t* params) {
-//    for (u8 i = 0; i < LOD_COUNT; i++) {
+//    for (u8 i = 0; i < LOD_COUNT_INTERNAL; i++) {
 //        lod_to_sq_dist_quantized_g[i] = lod_to_sq_dist(i, params);
 //    }
 //}
@@ -352,7 +351,7 @@ typedef struct {
 
 static u32 instance_count_g;
 static u32 instance_index_buf_freq_count_g[9];
-static u32 lod_instance_counts_g[LOD_COUNT];
+static u32 lod_instance_counts_g[LOD_COUNT_INTERNAL];
 static terrain_instance_data_t instance_data_buffer_g[TERRAIN_MAX_INSTANCES];
 
 // smaller index buffer first
@@ -371,9 +370,7 @@ void terrain_instance_swap(u32 a, u32 b) {
     instance_data_buffer_g[b] = temp;
 }
 
-#include <stdio.h>
 static inline void output_instance(qt_node node, u8 lod) {
-    //printf("instance count %u, size %f\n", instance_count_g, node.size);
     if (instance_count_g >= TERRAIN_MAX_INSTANCES) return;
     instance_data_buffer_g[instance_count_g].x = node.x;
     instance_data_buffer_g[instance_count_g].z = node.z;
@@ -386,8 +383,6 @@ static inline void output_instance(qt_node node, u8 lod) {
 // 0, not visible
 // 1, visible but not subdivided further
 // 2, visible and subdivided
-
-#include <stdio.h>
 
 typedef enum {
     CHUNKED_LOD_RESULT_CULLED,
@@ -413,7 +408,7 @@ static u8 fill_instance(qt_node node, vec2 camera_xz_pos, frustum_t* frustum, u8
         }
     }
 
-    if (lod >= lod_config_g.max_lod) {
+    if (lod >= LOD_COUNT_INTERNAL - 1) {
         output_instance(node, lod);
         return CHUNKED_LOD_RESULT_STOPPED;
     }
@@ -430,7 +425,6 @@ static u8 fill_instance(qt_node node, vec2 camera_xz_pos, frustum_t* frustum, u8
         float min_dist_for_lod = lod_to_sq_dist_quantized_g[lod];
         // node is too far from the camera, given our LOD level(depth)
         if (d >= min_dist_for_lod) {
-            assert(lod > 0);
             output_instance(node, lod);
             return CHUNKED_LOD_RESULT_STOPPED;
         }
@@ -460,12 +454,6 @@ typedef enum {
 } TerrainNeighbourType;
 
 void terrain_fill_instance_data(camera_t* cam, terrain_instance_data_t* instance_data_buffer) {
-    //printf("LOD distances\n");
-    //for (u32 i = 0; i < LOD_COUNT; i++) {
-    //    printf("%f ", sqrtf(lod_to_sq_dist_quantized_g[i]));
-    //}
-    //printf("\n");
-
     // root covers 4 tiles
 
     // snap pos to nearest grid corner, ie round
@@ -477,15 +465,12 @@ void terrain_fill_instance_data(camera_t* cam, terrain_instance_data_t* instance
         .x = corner_x, 
         .z = corner_z
     };
-    //printf("qt root: %f, %f, cam: %f %f, grid size: %f\n", root.x, root.z, cam->transform.pos.x, cam->transform.pos.z, (float)TERRAIN_GRID_SIZE);
 
     frustum_t f = camera_get_frustum(cam);
     instance_count_g = 0;
     memset(lod_instance_counts_g, 0, sizeof(lod_instance_counts_g));
 
     fill_instance(root, (vec2){cam->transform.pos.x, cam->transform.pos.z}, &f, 0);
-
-    printf("instance count: %u\n", instance_count_g);
 
     assert(instance_count_g > 0);
 
@@ -500,7 +485,7 @@ void terrain_fill_instance_data(camera_t* cam, terrain_instance_data_t* instance
         const static float epsilon = 0.001f;
         u32 index_fine_start = 0;
         // scan and adjust index buffers based on neighbours
-        for (u32 lod = LOD_COUNT - 1; lod > 1; lod--) {  // fine lods
+        for (u32 lod = LOD_COUNT_INTERNAL - 1; lod > 1; lod--) {  // fine lods
             u32 n_fine   = lod_instance_counts_g[lod];
             u32 n_coarse = lod_instance_counts_g[lod - 1];
             if (n_fine == 0 || n_coarse == 0) { index_fine_start += n_fine; continue; }
@@ -565,9 +550,9 @@ void terrain_fill_instance_data(camera_t* cam, terrain_instance_data_t* instance
 void terrain_render(VulkanCtx* ctx, game_state_t* game_state, terrain_gpu_t* terrain, VkCommandBuffer cmd_buf, VkDescriptorSet ubo_global_descriptor_set, u32 frame) {
     //vec3_print(game_state->main_camera.transform.pos, printf);
 
-    float coarsest_dist = TERRAIN_GRID_SIZE * 2; //* sqrtf(2.0f);
+    float coarsest_dist = TERRAIN_GRID_SIZE / 2;
     float finest_dist = coarsest_dist / (float)(1 << (LOD_COUNT - 1));
-    finest_dist *= 2.0f; // finest LOD radius tuning exp dropoff
+    //finest_dist *= 2.0f; // finest LOD radius tuning exp dropoff
     lod_to_sq_dist_set_params(finest_dist);
 
     // instance generation

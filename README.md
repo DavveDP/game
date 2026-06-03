@@ -14,3 +14,12 @@ apt install libx11-dev libxi-dev clang
 ## Remarks
 
 Project only runs on X11 and re
+
+## Controls
+
+Mouse + WASD - Move camera XZ
+SPACE - Move up
+CTRL  - Move down
+
+M - toggle wireframe (mesh)
+F - freeze clipmap
