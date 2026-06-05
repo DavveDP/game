@@ -1,3 +1,7 @@
+#pragma once
+#include <game.h>
+#include <vulkan_alloc_gpu.h>
+
 // TODO: Current Physical device should have its own arena 
 // that can be reset on device swap
 typedef struct PhysicalDevice {
@@ -5,20 +9,20 @@ typedef struct PhysicalDevice {
     VkPhysicalDeviceProperties props;
     VkPhysicalDeviceMemoryProperties props_memory;
     //VkFormatProperties props_format;
-    u32 presentIndex;
+    u32 present_index;
 
     gpu_arena_pool_t gpu_arena_pool; // one for each props.memoryTypes
 
     struct {
         u32 index;
         VkQueueFamilyProperties props;
-    } graphicsQF;
+    } qf_graphics;
 
     struct {
         u32 index;
         VkQueueFamilyProperties props;
-    } presentQF;
-    VkPresentModeKHR presentMode;
+    } qf_present;
+    VkPresentModeKHR present_mode;
 
     struct {
         u32 count;
@@ -26,15 +30,15 @@ typedef struct PhysicalDevice {
         VkSurfaceFormatKHR selected;
     } formats;
 
-    VkSurfaceCapabilitiesKHR surfaceCapabilities;
+    VkSurfaceCapabilitiesKHR surface_capabilities;
 } PhysicalDevice;
 
 typedef struct Swapchain {
     VkSwapchainKHR handle;
     VkImage* images;
-    VkImageView* imageViews;
+    VkImageView* image_views;
     VkFramebuffer* framebuffers;
-    u32 imageCount;
+    u32 image_count;
 
     // screen-size attachments - same lifetime as swapchain
     VkImage image_depth_buffer;
@@ -48,7 +52,7 @@ typedef struct LogicalDevice {
     struct {
         VkQueue graphics;
         VkQueue present;
-    } queueHandles;
+    } queue_handles;
     struct {
         Swapchain* current;
         gpu_arena_t arena_depth_buf;
@@ -83,7 +87,7 @@ typedef struct VulkanCtx {
         PhysicalDevice* selected;
         PhysicalDevice* all;
         u32 count;
-    } physicalDevice;
+    } physical_device;
 
     LogicalDevice device;
     VkSurfaceKHR surface;
@@ -99,10 +103,10 @@ typedef struct VulkanCtx {
 } VulkanCtx;
 
 u32 window_height(VulkanCtx* ctx) {
-    return ctx->physicalDevice.selected->surfaceCapabilities.currentExtent.height;
+    return ctx->physical_device.selected->surface_capabilities.currentExtent.height;
 }
 u32 window_width(VulkanCtx* ctx) {
-    return ctx->physicalDevice.selected->surfaceCapabilities.currentExtent.width;
+    return ctx->physical_device.selected->surface_capabilities.currentExtent.width;
 }
 
 typedef enum {
@@ -149,7 +153,73 @@ typedef struct {
             arena_t* arena_permanent, 
             arena_t* arena_scratch, 
             VkResult (*surface_factory)(VkInstance instance, VkSurfaceKHR* surface_out),
+            const char** enabledInstanceExtensionNames,
+            u32 n_enabledInstanceExtensionNames,
             file_data_t vertex_shader,
             file_data_t fragment_shader);
     void (*render)(vulkan_state_t* vulkan_state, game_state_t* game_state, float time);
 } render_api_t;
+
+typedef struct staging_buffer_upload_t {
+    VkBufferCopy copyRegion;
+    VkBuffer src, dst;
+} staging_buffer_upload_t;
+
+void upload_staging_buffer(VulkanCtx* ctx, staging_buffer_upload_t* uploadInfo) {
+    VkCommandBufferAllocateInfo copyBufInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = ctx->render_state.cmd_pool_graphics_transient,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1
+    };
+    // copyRegion, src, dst
+    VkCommandBuffer copyBuf;
+    VkResult res = vkAllocateCommandBuffers(ctx->device.handle, &copyBufInfo, &copyBuf);
+    assert(res == VK_SUCCESS);
+
+    VkCommandBufferBeginInfo beginInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+    };
+
+    res = vkBeginCommandBuffer(copyBuf, &beginInfo);
+    assert(res == VK_SUCCESS);
+
+    vkCmdCopyBuffer(copyBuf, uploadInfo->src, uploadInfo->dst, 1, &uploadInfo->copyRegion);
+    res = vkEndCommandBuffer(copyBuf);
+    assert(res == VK_SUCCESS);
+    VkSubmitInfo submitInfo = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &copyBuf
+    };
+    res = vkQueueSubmit(ctx->device.queue_handles.graphics, 1, &submitInfo, VK_NULL_HANDLE);
+    assert(res == VK_SUCCESS);
+    // TODO: add transfer fence maybe?
+    vkQueueWaitIdle(ctx->device.queue_handles.graphics);
+    assert(res == VK_SUCCESS);
+}
+
+VkShaderModule create_shader_module(VkDevice device, const u32* code, size_t codeSize, VkResult* res) {
+    VkShaderModuleCreateInfo info = {
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize = codeSize,
+        .pCode = code
+    };
+    VkShaderModule module;
+    *res = vkCreateShaderModule(device, &info, NULL, &module);
+    return module;
+}
+
+void allocate_descriptor_sets(arena_t* scratch, VkDevice device, VkDescriptorPool pool, VkDescriptorSetLayout layout, u32 count, VkDescriptorSet* out) {
+    VkDescriptorSetLayout* layouts = alloc_array(scratch, VkDescriptorSetLayout, count);
+    for (u32 i = 0; i < count; i++) layouts[i] = layout;
+    VkDescriptorSetAllocateInfo info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = pool,
+        .descriptorSetCount = count,
+        .pSetLayouts = layouts
+    };
+    VkResult res = vkAllocateDescriptorSets(device, &info, out);
+    assert(res == VK_SUCCESS);
+}

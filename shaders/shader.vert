@@ -16,6 +16,7 @@ struct InstanceData {
     float z;
     float size;
     uint buf_index;
+    uint lod;
 };
 
 layout(set = 1, binding = 0) readonly buffer InstanceBuffer {
@@ -117,6 +118,7 @@ void main() {
         col = mix(col, color_snow,     smoothstep(2500.0, 3500.0, raw_height) * smoothstep(0.45, 0.25, slope));
     }
 
+    //fragColor = vec3(1.0);
     fragColor   = col;
     fragIsWater = is_water ? 1.0 : 0.0;  // pass to frag shader
     fragHeight  = raw_height;

@@ -11,3 +11,8 @@ papers/
 *.spv
 bin/
 models/
+
+# toolchain
+.cache
+.vscode
+compile_commands.json

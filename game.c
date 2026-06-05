@@ -1,3 +1,5 @@
+#include <game.h>
+
 void main_camera_movement(input_t* input, game_state_t* game_state, float delta_time) {
     // wasd to move camera
     vec3 camera_acceleration = vec3_zero;

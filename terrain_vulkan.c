@@ -1,4 +1,6 @@
- #include <mesh.c> // plane subdivision
+#include <vulkan_game.h>
+#include <maths.h>
+#include <mesh.c> // plane subdivision
 // Rendering
 
 typedef struct {
@@ -9,8 +11,9 @@ typedef struct {
 #define TERRAIN_MAX_SPLINE_SEGMENTS 128 // across all terrain splines
 #define TERRAIN_GRID_SIZE 64000
 #define TERRAIN_MAX_Y 4500
-#define LOD_COUNT 7 // last one not visible
+#define LOD_COUNT 9 // last one not visible
 #define LOD_COUNT_INTERNAL (LOD_COUNT + 2)
+#define MESH_SUBDIV 5
 
 typedef struct {
     float min_lod_dist;
@@ -20,8 +23,8 @@ typedef struct {
 typedef struct {
     float x, z;
     float size;
-    u8 buf_index;
-    // padding...
+    u32 buf_index;
+    u32 lod;
 } terrain_instance_data_t;
 
 // Replace the ambiguous naive flag with explicit parameters
@@ -42,15 +45,15 @@ static terrain_lod_config_t lod_config_g = {
 //    return d*d;
 //}
 
-static float lod_to_sq_dist_quantized_g[LOD_COUNT_INTERNAL];
+//static float lod_to_sq_dist_quantized_g[LOD_COUNT_INTERNAL];
 
-void lod_to_sq_dist_set_params(float finest_dist) {
-    for (u8 i = 0; i < LOD_COUNT_INTERNAL; i++) {
-        u8 levels_from_finest = (LOD_COUNT_INTERNAL - 1) - i;
-        float d = finest_dist * (float)(1 << levels_from_finest);
-        lod_to_sq_dist_quantized_g[i] = d * d;
-    }
-}
+//void lod_to_sq_dist_set_params(float finest_dist) {
+//    for (u8 i = 0; i < LOD_COUNT_INTERNAL; i++) {
+//        u8 levels_from_finest = (LOD_COUNT_INTERNAL - 1) - i;
+//        float d = finest_dist * (float)(1 << levels_from_finest);
+//        lod_to_sq_dist_quantized_g[i] = d * d;
+//    }
+//}
 //void lod_to_sq_dist_set_params(const lod_to_dist_params_t* params) {
 //    for (u8 i = 0; i < LOD_COUNT_INTERNAL; i++) {
 //        lod_to_sq_dist_quantized_g[i] = lod_to_sq_dist(i, params);
@@ -299,9 +302,9 @@ void terrain_init(
     // allocate vertices
     {
         // generate vertices
-        mesh_subdiv_plane(5, NULL, 0, &terrain->n_vertices, NULL, NULL);
+        mesh_subdiv_plane(MESH_SUBDIV, NULL, 0, &terrain->n_vertices, NULL, NULL);
         terrain_vertex_t* vertices = alloc_array(arena_scratch, terrain_vertex_t, terrain->n_vertices);
-        mesh_subdiv_plane(5, &vertices->pos, sizeof(*vertices), &terrain->n_vertices, NULL, NULL);
+        mesh_subdiv_plane(MESH_SUBDIV, &vertices->pos, sizeof(*vertices), &terrain->n_vertices, NULL, NULL);
 
         // shift all vertices from xz [0-1] to xz [-0.5, 0.5] so that it matches quadtree node center
         for (u32 i = 0; i < terrain->n_vertices; i++) {
@@ -310,11 +313,11 @@ void terrain_init(
         }
 
         // generate indices
-        mesh_create_chunked_lod_instances(5, NULL, terrain->n_indices);
+        mesh_create_chunked_lod_instances(MESH_SUBDIV, NULL, terrain->n_indices);
         u32 n_total_indices = 0;
         for (u32 i = 0; i < 9; i++) { n_total_indices += terrain->n_indices[i]; }
         u16* indices = alloc_array(arena_scratch, u16, n_total_indices);
-        mesh_create_chunked_lod_instances(5, indices, terrain->n_indices);
+        mesh_create_chunked_lod_instances(MESH_SUBDIV, indices, terrain->n_indices);
         n_total_indices = 0;
         for (u32 i = 0; i < 9; i++) { n_total_indices += terrain->n_indices[i]; }
         // copy all data to staging so that layout is:
@@ -376,6 +379,7 @@ static inline void output_instance(qt_node node, u8 lod) {
     instance_data_buffer_g[instance_count_g].z = node.z;
     instance_data_buffer_g[instance_count_g].size = node.size;
     instance_data_buffer_g[instance_count_g].buf_index = 0;
+    instance_data_buffer_g[instance_count_g].lod = lod;
     lod_instance_counts_g[lod]++;
     instance_count_g++;
 }
@@ -389,6 +393,8 @@ typedef enum {
     CHUNKED_LOD_RESULT_STOPPED,
     CHUNKED_LOD_RESULT_SUBDIVIDED
 } ChunkedLodResult;
+
+#include <stdio.h>
 
 static u8 fill_instance(qt_node node, vec2 camera_xz_pos, frustum_t* frustum, u8 lod) {
     // frustum cull (not working rn lol)
@@ -415,19 +421,23 @@ static u8 fill_instance(qt_node node, vec2 camera_xz_pos, frustum_t* frustum, u8
 
 
     if (lod_config_g.use_lod && lod > 0) {
-        // chebichev
+        // chebichev to node edge
         vec2 diff = {
-            fabsf(camera_xz_pos.x - node.x) - node.size/2,
-            fabsf(camera_xz_pos.y - node.z) - node.size/2
+            fabsf(camera_xz_pos.x - node.x),
+            fabsf(camera_xz_pos.y - node.z)
         };
         float d = fmaxf(0.0f, fmaxf(diff.x, diff.y));
-        d = d * d;
-        float min_dist_for_lod = lod_to_sq_dist_quantized_g[lod];
-        // node is too far from the camera, given our LOD level(depth)
-        if (d >= min_dist_for_lod) {
+        if (d > node.size * 2) {
             output_instance(node, lod);
             return CHUNKED_LOD_RESULT_STOPPED;
         }
+
+        //d = d * d;
+
+        //float min_dist_for_lod = lod_to_sq_dist_quantized_g[lod];
+        //// node is too far from the camera, given our LOD level(depth)
+        //if (d >= min_dist_for_lod) {
+        //}
     }
 
 
@@ -465,6 +475,8 @@ void terrain_fill_instance_data(camera_t* cam, terrain_instance_data_t* instance
         .x = corner_x, 
         .z = corner_z
     };
+
+    printf("root: %f %f\n", root.x, root.z);
 
     frustum_t f = camera_get_frustum(cam);
     instance_count_g = 0;
@@ -547,13 +559,14 @@ void terrain_fill_instance_data(camera_t* cam, terrain_instance_data_t* instance
     }
 }
 
+
 void terrain_render(VulkanCtx* ctx, game_state_t* game_state, terrain_gpu_t* terrain, VkCommandBuffer cmd_buf, VkDescriptorSet ubo_global_descriptor_set, u32 frame) {
     //vec3_print(game_state->main_camera.transform.pos, printf);
 
-    float coarsest_dist = TERRAIN_GRID_SIZE / 2;
-    float finest_dist = coarsest_dist / (float)(1 << (LOD_COUNT - 1));
+    //float coarsest_dist = TERRAIN_GRID_SIZE / 2;
+    //float finest_dist = coarsest_dist / (float)(1 << (LOD_COUNT - 1));
     //finest_dist *= 2.0f; // finest LOD radius tuning exp dropoff
-    lod_to_sq_dist_set_params(finest_dist);
+    //lod_to_sq_dist_set_params(finest_dist);
 
     // instance generation
     terrain_fill_instance_data(game_state->frozen_terrain ? &game_state->frozen_camera : &game_state->main_camera, instance_data_buffer_g);
@@ -572,8 +585,8 @@ void terrain_render(VulkanCtx* ctx, game_state_t* game_state, terrain_gpu_t* ter
     VkViewport viewport = {
         .x = 0.0f,
         .y = 0.0f,
-        .width  = ctx->physicalDevice.selected->surfaceCapabilities.currentExtent.width,
-        .height = ctx->physicalDevice.selected->surfaceCapabilities.currentExtent.height,
+        .width  = ctx->physical_device.selected->surface_capabilities.currentExtent.width,
+        .height = ctx->physical_device.selected->surface_capabilities.currentExtent.height,
         .minDepth = 0.0f,
         .maxDepth = 1.0f
     };
@@ -581,7 +594,7 @@ void terrain_render(VulkanCtx* ctx, game_state_t* game_state, terrain_gpu_t* ter
 
     VkRect2D scissor = {
         .offset = {0, 0},
-        .extent = ctx->physicalDevice.selected->surfaceCapabilities.currentExtent
+        .extent = ctx->physical_device.selected->surface_capabilities.currentExtent
     };
 
     VkDescriptorSet sets[] = {ubo_global_descriptor_set, terrain->descriptor_sets[frame]};

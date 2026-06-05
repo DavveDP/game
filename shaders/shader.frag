@@ -61,4 +61,5 @@ void main() {
     vec3 final = mix(lit, fog_col, fog_t);
 
     outColor = vec4(final, 1.0);
+    //outColor = vec4(fragColor;
 }

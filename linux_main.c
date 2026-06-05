@@ -1,34 +1,37 @@
 //#define _POSIX_C_SOURCE 199309L // required for clock_gettime
-#define _POSIX_C_SOURCE 200112L // required by readlink
-                                
+#define _POSIX_C_SOURCE 200112L // required by readlink, why does this have to be here?
 
-// Essentials from C stdlib
-#include <assert.h>
-#include <stddef.h>
-#include <stdint.h>
-#include <string.h>
-#include <defines.h>
+// My own definintions like u32, u64 etc
+#include <std.h>
 
-#include <alloc.c>
-#include <math.c> // links with math
-#include <algorithms.c>
-#include <transforms.c>
-// My platform agnostic files
-
+// game api
 #include <game.h>
-// function pointer in both cases
+
 #ifndef ENABLE_HOT_RELOAD
     #include <game.c>
 #endif
 
+// vulkan
 #define VK_USE_PLATFORM_XLIB_KHR
-#include <vulkan/vulkan.h>
-#include <alloc_gpu.c>
+// renderer api
 #include <vulkan_game.h>
 
 #ifndef ENABLE_HOT_RELOAD
     #include <vulkan_game.c>
 #endif
+
+// Note: APIs are defined for renderer and game so that they can 
+// be compiled together as game.so and reloaded by the platform for 
+
+// So for clangd to work I need all the file above to essentially be their own TUs
+// General utils
+// Option 1: rename alloc, math, algorithms and transforms to .h and add pragma once up top. Then include in all files that require them
+// Option 2: can't think of a better one
+// Game and renderer APIs
+// Put pragma once on game.h and vulkan_game.h. Make alloc_gpu a header with pragma once
+// Then in game.c and vulkan_game.c include the general utils and your own header. Done
+
+// Begin platform code
 
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -38,7 +41,7 @@
 
 #ifdef ENABLE_HOT_RELOAD
     #define GAME_LIB_FILENAME "game.so"
-    #include <linux_hot_reload.c>
+    #include <linux_hot_reload.c> // this just includes whatever or I just ignore it for now, since I rarely touch it
 #endif
 
 // Begin Platfrom specific code
@@ -50,7 +53,6 @@
 #include <X11/Xlib.h>
 #include <X11/XKBlib.h>
 #include <X11/extensions/XInput2.h>
-
 void set_proc_dir_to_exe_dir() {
     char exe_path[4096];
     ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
@@ -287,7 +289,13 @@ int main(int argc, char** argv) {
     file_data_t fragment_code = read_file(&arena_scratch, "../shaders/bin/fragment.spv");
 
     // Rendering
-    vulkan_state_t* renderer = render_api.init_rendering(&arena_permanent, &arena_scratch, create_x11_surface, vertex_code, fragment_code);
+
+    const char *enabledInstanceExtensionNames[] = {
+        VK_KHR_SURFACE_EXTENSION_NAME,
+        VK_KHR_XLIB_SURFACE_EXTENSION_NAME
+    };
+
+    vulkan_state_t* renderer = render_api.init_rendering(&arena_permanent, &arena_scratch, create_x11_surface, enabledInstanceExtensionNames, LEN(enabledInstanceExtensionNames), vertex_code, fragment_code);
 
     // Game Loop
 
@@ -297,10 +305,12 @@ int main(int argc, char** argv) {
 
     // game init?
     game_state_t game_state;
-    game_state.main_camera = camera_looking_at_from((vec3){-1.0f,2242,-1.0f}, (vec3){-875.718567f, 2442.570068f, -1000.953491f});
+    //game_state.main_camera = camera_looking_at_from((vec3){-1.0f,2242,-1.0f}, (vec3){-875.718567f, 2442.570068f, -1000.953491f});
+    game_state.main_camera = camera_looking_at_from((vec3){0, 0, 0}, (vec3){0,1000, 0});
     game_state.camera_speed = vec3_zero;
     game_state.current_subdiv = 1;
     game_state.frozen_terrain = false;
+    game_state.show_wireframe = false;
     float delta_time = 0;
     bool window_focused = false;
 
@@ -326,8 +336,8 @@ update_start:
                 case ConfigureNotify:
                     {
                         if(renderer->ctx.render_state.swapchain_cooldown == 0 && (
-                                    e.xconfigure.width != renderer->ctx.physicalDevice.selected->surfaceCapabilities.currentExtent.width || 
-                                    e.xconfigure.height != renderer->ctx.physicalDevice.selected->surfaceCapabilities.currentExtent.height)) 
+                                    e.xconfigure.width != renderer->ctx.physical_device.selected->surface_capabilities.currentExtent.width || 
+                                    e.xconfigure.height != renderer->ctx.physical_device.selected->surface_capabilities.currentExtent.height)) 
                         {
                             renderer->ctx.render_state.recreate_swapchain = true;
                         }

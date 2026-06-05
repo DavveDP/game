@@ -1,3 +1,11 @@
+#pragma once
+
+// Essentials from C stdlib
+#include <assert.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+
 typedef uint64_t u64;
 typedef uint32_t u32;
 typedef uint16_t u16;
@@ -35,3 +43,5 @@ typedef int8_t  i8;
             UNIQUE(__acc) += (Delta);                      \
         }                                                  \
     } while(0)
+
+

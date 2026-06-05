@@ -1,3 +1,5 @@
+#include <std.h>
+
 u32 mesh_generate_indices_stitched(u32 n, i32 stitched_row, i32 stitched_col, u16* indices) {
         // generate indices
     u32 i = 0;

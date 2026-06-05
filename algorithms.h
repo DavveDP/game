@@ -1,3 +1,5 @@
+#include <std.h>
+
 void partitioning(u32 low, u32 high, bool (*comp)(u32, u32), void (*swap)(u32, u32)) {
     if (low >= high) return;
     if (high - low == 1) {

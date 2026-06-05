@@ -1,3 +1,5 @@
+#pragma once
+#include <std.h>
 // Allows easy calls if allocators have the same signature
 // - compile-time dispatch
 

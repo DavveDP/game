@@ -1,4 +1,8 @@
 #pragma once
+#include <alloc.h>
+#include <maths.h>
+#include <algorithms.h>
+#include <transforms.h>
 
 // Input
 

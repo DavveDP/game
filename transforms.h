@@ -1,3 +1,7 @@
+#pragma once
+#include <std.h>
+#include <maths.h>
+
 typedef struct {
     vec3 pos;
     quat rot;

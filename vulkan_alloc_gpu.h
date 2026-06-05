@@ -1,3 +1,7 @@
+#pragma once
+#include <std.h>
+#include <vulkan/vulkan.h>
+
 typedef struct {
     VkBuffer buffer;
     VkDeviceMemory memory;

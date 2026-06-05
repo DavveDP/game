@@ -1,9 +1,6 @@
-#define MAX_FRAMES_IN_FLIGHT 3
+#include <vulkan_game.h>
 
-const char* enabledInstanceExtensionNames[] = {
-    VK_KHR_SURFACE_EXTENSION_NAME,
-    VK_KHR_XLIB_SURFACE_EXTENSION_NAME
-};
+#define MAX_FRAMES_IN_FLIGHT 3
 
 const char* enabledDeviceExtensionNames[] = {
     VK_KHR_SWAPCHAIN_EXTENSION_NAME
@@ -23,21 +20,21 @@ size_t get_swapchain_size(u32 imageCount) {
 }
 
 void vulkan_create_logical_device(VulkanCtx* ctx) {
-    PhysicalDevice* physDevice = ctx->physicalDevice.selected;
+    PhysicalDevice* physDevice = ctx->physical_device.selected;
     float priority = 1.0f;
     VkDeviceQueueCreateInfo infos[2] = {
         // graphics
         {
             .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-            .queueFamilyIndex = physDevice->graphicsQF.index,
+            .queueFamilyIndex = physDevice->qf_graphics.index,
             .queueCount = 1,
             .pQueuePriorities = &priority
         }
     };
     u32 qCount = 1;
-    if (physDevice->presentQF.index != physDevice->graphicsQF.index) {
+    if (physDevice->qf_present.index != physDevice->qf_graphics.index) {
         infos[1].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-        infos[1].queueFamilyIndex = physDevice->presentQF.index;
+        infos[1].queueFamilyIndex = physDevice->qf_present.index;
         infos[1].queueCount = 1;
         infos[1].pQueuePriorities = &priority;
         qCount++;
@@ -56,71 +53,31 @@ void vulkan_create_logical_device(VulkanCtx* ctx) {
     };
     VkResult res = vkCreateDevice(physDevice->handle, &info, NULL, &ctx->device.handle);
     assert(res == VK_SUCCESS);
-    vkGetDeviceQueue(ctx->device.handle, physDevice->graphicsQF.index, 0, &ctx->device.queueHandles.graphics);
-    vkGetDeviceQueue(ctx->device.handle, physDevice->presentQF.index, 0, &ctx->device.queueHandles.present);
+    vkGetDeviceQueue(ctx->device.handle, physDevice->qf_graphics.index, 0, &ctx->device.queue_handles.graphics);
+    vkGetDeviceQueue(ctx->device.handle, physDevice->qf_present.index, 0, &ctx->device.queue_handles.present);
     ctx->device.swapchain.current = NULL;
 }
 
 u32 get_surface_capabilities_image_count(VulkanCtx* ctx) {
-    PhysicalDevice* device = ctx->physicalDevice.selected;
-    VkResult res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(ctx->physicalDevice.selected->handle, ctx->surface, &device->surfaceCapabilities);
+    PhysicalDevice* device = ctx->physical_device.selected;
+    VkResult res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(ctx->physical_device.selected->handle, ctx->surface, &device->surface_capabilities);
     assert(res == VK_SUCCESS);
-    assert(device->surfaceCapabilities.currentExtent.width != UINT32_MAX); // TODO: need to handle different if not X11
+    assert(device->surface_capabilities.currentExtent.width != UINT32_MAX); // TODO: need to handle different if not X11
 
     // decide on image count, according to:
     // https://vulkan-tutorial.com/Drawing_a_triangle/Presentation/Swap_chain
     // "However, simply sticking to this minimum means that we may sometimes have to wait on the driver to complete internal 
     // operations before we can acquire another image to render to. Therefore it is recommended to request at least one 
     // more image than the minimum:"
-    u32 imageCount = device->surfaceCapabilities.minImageCount + 1;
-    if (device->surfaceCapabilities.maxImageCount > 0 && imageCount > device->surfaceCapabilities.maxImageCount) {
-        imageCount = device->surfaceCapabilities.maxImageCount;
+    u32 imageCount = device->surface_capabilities.minImageCount + 1;
+    if (device->surface_capabilities.maxImageCount > 0 && imageCount > device->surface_capabilities.maxImageCount) {
+        imageCount = device->surface_capabilities.maxImageCount;
     }
     return imageCount;
 }
 
-typedef struct staging_buffer_upload_t {
-    VkBufferCopy copyRegion;
-    VkBuffer src, dst;
-} staging_buffer_upload_t;
-
-void upload_staging_buffer(VulkanCtx* ctx, staging_buffer_upload_t* uploadInfo) {
-    VkCommandBufferAllocateInfo copyBufInfo = {
-        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-        .commandPool = ctx->render_state.cmd_pool_graphics_transient,
-        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        .commandBufferCount = 1
-    };
-    // copyRegion, src, dst
-    VkCommandBuffer copyBuf;
-    VkResult res = vkAllocateCommandBuffers(ctx->device.handle, &copyBufInfo, &copyBuf);
-    assert(res == VK_SUCCESS);
-
-    VkCommandBufferBeginInfo beginInfo = {
-        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
-    };
-
-    res = vkBeginCommandBuffer(copyBuf, &beginInfo);
-    assert(res == VK_SUCCESS);
-
-    vkCmdCopyBuffer(copyBuf, uploadInfo->src, uploadInfo->dst, 1, &uploadInfo->copyRegion);
-    res = vkEndCommandBuffer(copyBuf);
-    assert(res == VK_SUCCESS);
-    VkSubmitInfo submitInfo = {
-        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-        .commandBufferCount = 1,
-        .pCommandBuffers = &copyBuf
-    };
-    res = vkQueueSubmit(ctx->device.queueHandles.graphics, 1, &submitInfo, VK_NULL_HANDLE);
-    assert(res == VK_SUCCESS);
-    // TODO: add transfer fence maybe?
-    vkQueueWaitIdle(ctx->device.queueHandles.graphics);
-    assert(res == VK_SUCCESS);
-}
-
 void create_and_set_new_swapchain(arena_t* swapchainArena, u32 imageCount, VulkanCtx* ctx) {
-    PhysicalDevice* physDevice = ctx->physicalDevice.selected;
+    PhysicalDevice* physDevice = ctx->physical_device.selected;
     LogicalDevice* device = &ctx->device;
     VkSwapchainCreateInfoKHR createInfo = {
         .sType =                 VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
@@ -128,21 +85,21 @@ void create_and_set_new_swapchain(arena_t* swapchainArena, u32 imageCount, Vulka
         .minImageCount =         imageCount,
         .imageFormat =           physDevice->formats.selected.format,
         .imageColorSpace =       physDevice->formats.selected.colorSpace,
-        .imageExtent =           physDevice->surfaceCapabilities.currentExtent,
+        .imageExtent =           physDevice->surface_capabilities.currentExtent,
         .imageArrayLayers =      1,
         .imageUsage =            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
         .imageSharingMode =      VK_SHARING_MODE_EXCLUSIVE,
         .queueFamilyIndexCount = 0,
         .pQueueFamilyIndices =   NULL,
-        .preTransform =          physDevice->surfaceCapabilities.currentTransform,
+        .preTransform =          physDevice->surface_capabilities.currentTransform,
         .compositeAlpha =        VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-        .presentMode =           physDevice->presentMode,
+        .presentMode =           physDevice->present_mode,
         .clipped =               VK_TRUE,
         .oldSwapchain =          device->swapchain.current ? device->swapchain.current->handle : VK_NULL_HANDLE
     };
     // if graphics and presents are from different queue indices
-    if (device->queueHandles.graphics != device->queueHandles.present) {
-        u32 indices[2] = {physDevice->graphicsQF.index, physDevice->presentQF.index};
+    if (device->queue_handles.graphics != device->queue_handles.present) {
+        u32 indices[2] = {physDevice->qf_graphics.index, physDevice->qf_present.index};
         createInfo.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
         createInfo.queueFamilyIndexCount = 2;
         createInfo.pQueueFamilyIndices = indices;
@@ -158,16 +115,16 @@ void create_and_set_new_swapchain(arena_t* swapchainArena, u32 imageCount, Vulka
     res = vkGetSwapchainImagesKHR(device->handle, device->swapchain.current->handle, &imageCount, NULL);
     assert(res == VK_SUCCESS);
     device->swapchain.current->images = alloc_array(swapchainArena, VkImage, imageCount);
-    device->swapchain.current->imageViews = alloc_array(swapchainArena, VkImageView, imageCount);
+    device->swapchain.current->image_views = alloc_array(swapchainArena, VkImageView, imageCount);
     device->swapchain.current->framebuffers = alloc_array(swapchainArena, VkFramebuffer, imageCount);
     res = vkGetSwapchainImagesKHR(device->handle, device->swapchain.current->handle, &imageCount, device->swapchain.current->images);
     assert(res == VK_SUCCESS);
 
     // depth buffer, sized to extent
     VkFormatProperties props;
-    vkGetPhysicalDeviceFormatProperties(ctx->physicalDevice.selected->handle, VK_FORMAT_D32_SFLOAT, &props);
+    vkGetPhysicalDeviceFormatProperties(ctx->physical_device.selected->handle, VK_FORMAT_D32_SFLOAT, &props);
     assert(props.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
-    VkExtent2D extent = ctx->physicalDevice.selected->surfaceCapabilities.currentExtent;
+    VkExtent2D extent = ctx->physical_device.selected->surface_capabilities.currentExtent;
     VkImageCreateInfo depth_info = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .imageType = VK_IMAGE_TYPE_2D,
@@ -221,11 +178,11 @@ void create_and_set_new_swapchain(arena_t* swapchainArena, u32 imageCount, Vulka
                 .layerCount = 1
             }
         };
-        res = vkCreateImageView(device->handle, &imageViewInfo, NULL, &device->swapchain.current->imageViews[i]);
+        res = vkCreateImageView(device->handle, &imageViewInfo, NULL, &device->swapchain.current->image_views[i]);
         assert(res == VK_SUCCESS);
 
         VkImageView attachments[] = {
-            device->swapchain.current->imageViews[i],
+            device->swapchain.current->image_views[i],
             device->swapchain.current->image_view_depth_buffer // same depth for all frames
         };
         VkFramebufferCreateInfo framebufferInfo = {
@@ -240,13 +197,13 @@ void create_and_set_new_swapchain(arena_t* swapchainArena, u32 imageCount, Vulka
         res = vkCreateFramebuffer(device->handle, &framebufferInfo, NULL, &device->swapchain.current->framebuffers[i]);
         assert(res == VK_SUCCESS);
     }
-    device->swapchain.current->imageCount = imageCount;
+    device->swapchain.current->image_count = imageCount;
 };
 
 void destroy_swapchain(VkDevice device, Swapchain* old) {
-    for (int i = 0; i < old->imageCount; i++) {
+    for (int i = 0; i < old->image_count; i++) {
         vkDestroyFramebuffer(device, old->framebuffers[i], NULL);
-        vkDestroyImageView(device, old->imageViews[i], NULL);
+        vkDestroyImageView(device, old->image_views[i], NULL);
         // images destroyed as part of the swapchain
     }
     vkDestroyImageView(device, old->image_view_depth_buffer, NULL);
@@ -277,7 +234,7 @@ void create_buffer(
     vkGetBufferMemoryRequirements(ctx->device.handle, *buffer, &memRequirements);
 
     VkPhysicalDeviceMemoryProperties memProperties;
-    vkGetPhysicalDeviceMemoryProperties(ctx->physicalDevice.selected->handle, &memProperties);
+    vkGetPhysicalDeviceMemoryProperties(ctx->physical_device.selected->handle, &memProperties);
 
 
     int memTypeIndex = -1;
@@ -302,19 +259,6 @@ void create_buffer(
     vkBindBufferMemory(ctx->device.handle, *buffer, *memory, 0);
 }
 
-void allocate_descriptor_sets(arena_t* scratch, VkDevice device, VkDescriptorPool pool, VkDescriptorSetLayout layout, u32 count, VkDescriptorSet* out) {
-    VkDescriptorSetLayout* layouts = alloc_array(scratch, VkDescriptorSetLayout, count);
-    for (u32 i = 0; i < count; i++) layouts[i] = layout;
-    VkDescriptorSetAllocateInfo info = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-        .descriptorPool = pool,
-        .descriptorSetCount = count,
-        .pSetLayouts = layouts
-    };
-    VkResult res = vkAllocateDescriptorSets(device, &info, out);
-    assert(res == VK_SUCCESS);
-}
-
 VkMemoryRequirements get_image_mem_reqs(VkDevice device, VkImageCreateInfo* info) {
     VkMemoryRequirements reqs;
     VkImage dummy;
@@ -324,16 +268,7 @@ VkMemoryRequirements get_image_mem_reqs(VkDevice device, VkImageCreateInfo* info
     return reqs;
 }
 
-VkShaderModule create_shader_module(VkDevice device, const u32* code, size_t codeSize, VkResult* res) {
-    VkShaderModuleCreateInfo info = {
-        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        .codeSize = codeSize,
-        .pCode = code
-    };
-    VkShaderModule module;
-    *res = vkCreateShaderModule(device, &info, NULL, &module);
-    return module;
-}
+
 
 // Begin game specific vulkan stuff
 
@@ -356,6 +291,8 @@ vulkan_state_t* init_rendering(
         arena_t* arena_permanent, 
         arena_t* arena_scratch, 
         VkResult (*surface_factory)(VkInstance instance, VkSurfaceKHR* surface_out),
+        const char** enabledInstanceExtensionNames,
+        u32 n_enabledInstanceExtensionNames,
         file_data_t vert_shader,
         file_data_t frag_shader) 
 {
@@ -378,7 +315,7 @@ vulkan_state_t* init_rendering(
             .pApplicationInfo = &appInfo,
             .enabledLayerCount = LEN(enabledLayerNames),
             .ppEnabledLayerNames = enabledLayerNames,
-            .enabledExtensionCount = LEN(enabledInstanceExtensionNames),
+            .enabledExtensionCount = n_enabledInstanceExtensionNames,
             .ppEnabledExtensionNames = enabledInstanceExtensionNames
         };
         res = vkCreateInstance(&info, NULL, &ctx->instance);
@@ -437,8 +374,8 @@ vulkan_state_t* init_rendering(
                 // grab first graphics queue family, beware can be several!
                 if (pqfs[q].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
                     // save graphicsQF info
-                    validDevice->graphicsQF.index = q;
-                    validDevice->graphicsQF.props = pqfs[q]; // copy
+                    validDevice->qf_graphics.index = q;
+                    validDevice->qf_graphics.props = pqfs[q]; // copy
                     break;
                 }
             }
@@ -448,14 +385,14 @@ vulkan_state_t* init_rendering(
                 if (vkGetPhysicalDeviceSurfaceSupportKHR(
                             handles[i], q, ctx->surface, &supported) == VK_SUCCESS && 
                         supported) {
-                    validDevice->presentQF.index = q;
-                    validDevice->presentQF.props = pqfs[q];
+                    validDevice->qf_present.index = q;
+                    validDevice->qf_present.props = pqfs[q];
                     break;
                 }
             }
 
             //// surface capabilities (only to check min image count or whatever, likely not that important)
-            res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(handles[i], ctx->surface, &validDevice->surfaceCapabilities);
+            res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(handles[i], ctx->surface, &validDevice->surface_capabilities);
             if (res != VK_SUCCESS) continue;
 
             // surface formats
@@ -481,10 +418,10 @@ vulkan_state_t* init_rendering(
             VkPresentModeKHR* presentModes = alloc_array(arena_permanent /*saved*/, VkPresentModeKHR, nPresentModes);
             vkGetPhysicalDeviceSurfacePresentModesKHR(handles[i], ctx->surface, &nPresentModes, presentModes);
             // get preferred present mode
-            validDevice->presentMode = VK_PRESENT_MODE_FIFO_KHR;
+            validDevice->present_mode = VK_PRESENT_MODE_FIFO_KHR;
             for (int p = 0; p < nPresentModes; p++) {
                 if (presentModes[p] == VK_PRESENT_MODE_MAILBOX_KHR) {
-                    validDevice->presentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+                    validDevice->present_mode = VK_PRESENT_MODE_MAILBOX_KHR;
                 }
             }
             // additional features
@@ -500,17 +437,17 @@ vulkan_state_t* init_rendering(
             // this is a valid device
             //printf("Found device: %s\n", validDevice->props.deviceName);
             // first device is assigned to the ptr
-            if (ctx->physicalDevice.count == 0) {
-                ctx->physicalDevice.all = validDevice;
+            if (ctx->physical_device.count == 0) {
+                ctx->physical_device.all = validDevice;
             }
-            ctx->physicalDevice.count++;
+            ctx->physical_device.count++;
             // advance arena mark, ie "lock in" the device
             validDeviceMark = arena_mark(arena_permanent); 
         }
     }
-    assert(ctx->physicalDevice.all != NULL && ctx->physicalDevice.count > 0);
+    assert(ctx->physical_device.all != NULL && ctx->physical_device.count > 0);
     // select device, can be changed later based on some scoring I guess
-    ctx->physicalDevice.selected = &ctx->physicalDevice.all[0];
+    ctx->physical_device.selected = &ctx->physical_device.all[0];
     //printf("Selected device: %s\n", ctx->physicalDevice.selected->props.deviceName);
     vulkan_create_logical_device(ctx);
 
@@ -537,7 +474,7 @@ vulkan_state_t* init_rendering(
         VkAttachmentDescription attachments[] = {
             // swapchain image view
             {
-                .format = ctx->physicalDevice.selected->formats.selected.format,
+                .format = ctx->physical_device.selected->formats.selected.format,
                 .samples = VK_SAMPLE_COUNT_1_BIT,
                 .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
                 .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
@@ -604,22 +541,22 @@ vulkan_state_t* init_rendering(
     // buffer arenas 
     ctx->arena_ubo_ssbo = gpu_buffer_arena_create(
             ctx->device.handle, 
-            ctx->physicalDevice.selected->handle, 
-            &ctx->physicalDevice.selected->props_memory, 
+            ctx->physical_device.selected->handle, 
+            &ctx->physical_device.selected->props_memory, 
             MB(16), 
             VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     ctx->arena_staging = gpu_buffer_arena_create(
             ctx->device.handle, 
-            ctx->physicalDevice.selected->handle, 
-            &ctx->physicalDevice.selected->props_memory, 
+            ctx->physical_device.selected->handle, 
+            &ctx->physical_device.selected->props_memory, 
             MB(16), 
             VK_BUFFER_USAGE_TRANSFER_SRC_BIT, 
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     ctx->arena_local_mesh = gpu_buffer_arena_create(
             ctx->device.handle, 
-            ctx->physicalDevice.selected->handle, 
-            &ctx->physicalDevice.selected->props_memory, 
+            ctx->physical_device.selected->handle, 
+            &ctx->physical_device.selected->props_memory, 
             MB(16), 
             VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
@@ -641,16 +578,16 @@ vulkan_state_t* init_rendering(
         };
         VkMemoryRequirements mem_reqs = get_image_mem_reqs(ctx->device.handle, &image_info);
         gpu_arena_init(
-                &ctx->physicalDevice.selected->gpu_arena_pool, 
+                &ctx->physical_device.selected->gpu_arena_pool, 
                 ctx->device.handle, 
-                &ctx->physicalDevice.selected->props_memory, 
+                &ctx->physical_device.selected->props_memory, 
                 &mem_reqs,
                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                 MB(256)); // not sure here tbh
         ctx->device.swapchain.arena_depth_buf = gpu_arena_alloc_subarena(
-                &ctx->physicalDevice.selected->gpu_arena_pool, 
+                &ctx->physical_device.selected->gpu_arena_pool, 
                 ctx->device.handle,
-                &ctx->physicalDevice.selected->props_memory, 
+                &ctx->physical_device.selected->props_memory, 
                 &mem_reqs,
                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                 MB(16));
@@ -662,7 +599,7 @@ vulkan_state_t* init_rendering(
         VkCommandPoolCreateInfo info1 = {
             .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
             .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-            .queueFamilyIndex = ctx->physicalDevice.selected->graphicsQF.index
+            .queueFamilyIndex = ctx->physical_device.selected->qf_graphics.index
         };
         res = vkCreateCommandPool(ctx->device.handle, &info1, NULL, &ctx->render_state.cmd_pool_graphics_auto_reset);
         assert(res == VK_SUCCESS);
@@ -670,7 +607,7 @@ vulkan_state_t* init_rendering(
         VkCommandPoolCreateInfo info2 = {
             .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
             .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
-            .queueFamilyIndex = ctx->physicalDevice.selected->graphicsQF.index
+            .queueFamilyIndex = ctx->physical_device.selected->qf_graphics.index
         };
         res = vkCreateCommandPool(ctx->device.handle, &info2, NULL, &ctx->render_state.cmd_pool_graphics_transient);
         assert(res == VK_SUCCESS);
@@ -821,7 +758,7 @@ void render(vulkan_state_t* vulkan_state, game_state_t* game_state, float time) 
         vkGetQueryPoolResults(ctx->device.handle, state->query_pool_timestamp, frame * LEN(timestamps), 
                 LEN(timestamps), sizeof(timestamps), timestamps, sizeof(u64), 
                 VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
-        state->curr_render_time_ms = (timestamps[1] - timestamps[0]) * ctx->physicalDevice.selected->props.limits.timestampPeriod * 1e-6f;
+        state->curr_render_time_ms = (timestamps[1] - timestamps[0]) * ctx->physical_device.selected->props.limits.timestampPeriod * 1e-6f;
     }
 
     // bookkeeping
@@ -834,7 +771,7 @@ void render(vulkan_state_t* vulkan_state, game_state_t* game_state, float time) 
     {
         vkDeviceWaitIdle(ctx->device.handle);
         // update capabilities (extents)
-        res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(ctx->physicalDevice.selected->handle, ctx->surface, &ctx->physicalDevice.selected->surfaceCapabilities);
+        res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(ctx->physical_device.selected->handle, ctx->surface, &ctx->physical_device.selected->surface_capabilities);
         // create new (transition from old)
         arena_t temp = arena_create(block_alloc(&ctx->device.swapchain.allocator), ctx->device.swapchain.allocator.blockSize);
         Swapchain* old = ctx->device.swapchain.current;
@@ -854,7 +791,7 @@ void render(vulkan_state_t* vulkan_state, game_state_t* game_state, float time) 
 
     // rendering begin
 
-    const vec3 sky_col = (vec3){0.4, 0.6, 0.9};
+    const vec3 sky_col = (vec3){0.2, 0.5, 0.8};
 
     // update global uniforms
     {
@@ -862,10 +799,10 @@ void render(vulkan_state_t* vulkan_state, game_state_t* game_state, float time) 
         uniform->time = time;
 
         // recompute projection based on screen size
-        float aspect = (float)ctx->physicalDevice.selected->surfaceCapabilities.currentExtent.width / 
-            ctx->physicalDevice.selected->surfaceCapabilities.currentExtent.height;
+        float aspect = (float)ctx->physical_device.selected->surface_capabilities.currentExtent.width / 
+            ctx->physical_device.selected->surface_capabilities.currentExtent.height;
         float fov_rads = PI/2;
-        float far = TERRAIN_GRID_SIZE / 2;
+        float far = (float)TERRAIN_GRID_SIZE / 2;
         game_state->main_camera.proj = mat4_perspective(fov_rads, aspect, 0.1f, far);
 
         // camera
@@ -905,7 +842,7 @@ void render(vulkan_state_t* vulkan_state, game_state_t* game_state, float time) 
         .renderPass = ctx->render_state.render_pass_main,
         .framebuffer = ctx->device.swapchain.current->framebuffers[state->curr_image_index],
         .renderArea.offset = {0,0},
-        .renderArea.extent = ctx->physicalDevice.selected->surfaceCapabilities.currentExtent,
+        .renderArea.extent = ctx->physical_device.selected->surface_capabilities.currentExtent,
         .clearValueCount = LEN(clearValues),
         .pClearValues = clearValues
     };
@@ -938,7 +875,7 @@ void render(vulkan_state_t* vulkan_state, game_state_t* game_state, float time) 
         .signalSemaphoreCount = 1,
         .pSignalSemaphores = &renderFinishedSemaphore 
     };
-    res = vkQueueSubmit(ctx->device.queueHandles.graphics, 1, &submitInfo, fence);
+    res = vkQueueSubmit(ctx->device.queue_handles.graphics, 1, &submitInfo, fence);
     assert(res == VK_SUCCESS);
 
     // present
@@ -950,7 +887,7 @@ void render(vulkan_state_t* vulkan_state, game_state_t* game_state, float time) 
         .pSwapchains = &ctx->device.swapchain.current->handle,
         .pImageIndices = &state->curr_image_index
     };
-    res = vkQueuePresentKHR(ctx->device.queueHandles.present, &presentInfo);
+    res = vkQueuePresentKHR(ctx->device.queue_handles.present, &presentInfo);
     if ((res == VK_SUBOPTIMAL_KHR || res == VK_ERROR_OUT_OF_DATE_KHR) && state->swapchain_cooldown == 0) {
         state->recreate_swapchain = true;
     }
